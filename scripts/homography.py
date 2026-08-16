@@ -5,10 +5,12 @@ import numpy as np
 from pathlib import Path
 import json
 import sys
+import pickle
 
 BASE_DIR = Path(__file__).parent.parent
 
-from ball_tracker import BallTracker
+from scripts.ball_tracker import BallTracker
+from scripts.side_functions import get_coordinates_and_center, validate_bounce
 
 """
 PICKLEBALL COURT MEASUREMENTS
@@ -41,12 +43,6 @@ PICKLEBALL COURT MEASUREMENTS
     *-------------------------------*                  -
   (0, 0)                          (20, 0)
 """
-
-COURT_HEIGHT = 44
-COURT_WIDTH = 20
-
-SCALE = 20
-PADDING = 50
 
 """
 
@@ -117,15 +113,21 @@ THINGS THAT I COULD IMPLEMENT
     - might implement avoiding detections that were in the same homographical spot for multiple frames meaning a false positive
 """
 
+COURT_HEIGHT = 44
+COURT_WIDTH = 20
+
+SCALE = 20
+PADDING = 50
+
 def compute_homography(video_points: np.array, top_down_points = np.array([
-                                                                [PADDING, PADDING + 44 * SCALE],                # near left baseline          
-                                                                [PADDING + 20 * SCALE, PADDING + 44 * SCALE],   # near right baseline
-                                                                [PADDING + 20 * SCALE, PADDING],                # far right baseline
-                                                                [PADDING, PADDING],                             # far left baseline
-                                                                [PADDING, PADDING + 29 * SCALE],                # near left kitchen
-                                                                [PADDING + 20 * SCALE, PADDING + 29 * SCALE],   # near right kitchen
-                                                                [PADDING, PADDING + 15 * SCALE],                # far right kitchen
-                                                                [PADDING + 20 * SCALE, PADDING + 15 * SCALE]],  # far left kitchen
+                                                                [PADDING, PADDING + 44 * SCALE],                # near left baseline    ( 50 , 930 ) 
+                                                                [PADDING + 20 * SCALE, PADDING + 44 * SCALE],   # near right baseline   ( 450, 930 )
+                                                                [PADDING + 20 * SCALE, PADDING],                # far right baseline    ( 450, 50  )
+                                                                [PADDING, PADDING],                             # far left baseline     ( 50 , 50  )
+                                                                [PADDING, PADDING + 29 * SCALE],                # near left kitchen     ( 50 , 630 )
+                                                                [PADDING + 20 * SCALE, PADDING + 29 * SCALE],   # near right kitchen    ( 450, 630 )
+                                                                [PADDING, PADDING + 15 * SCALE],                # far right kitchen     ( 50 , 350 ) 
+                                                                [PADDING + 20 * SCALE, PADDING + 15 * SCALE]],  # far left kitchen      ( 450, 350 )
                                                                 dtype=np.float32)
 ) -> np.array:
     
@@ -286,7 +288,7 @@ def draw_pickleball_court() -> np.array:
 def live_homography_graph(
     COURT_POINTS_INPUT_FILE: Path,
     PREDICTIONS_INPUT_FILE: Path,
-    BALL_TRACKING_INPUT_FILE: Path,
+    BALL_TRACKING_CLASS_FILE: Path
 ):
 
     PICKLEBALL_COURT_IMAGE = draw_pickleball_court()
@@ -298,10 +300,11 @@ def live_homography_graph(
     with open(PREDICTIONS_INPUT_FILE, "r") as f:
         print(f"Opening {PREDICTIONS_INPUT_FILE}")
         predictions_by_frame = json.load(f)
+        predictions_by_frame = {int(keys): vals for keys, vals in predictions_by_frame.items()}
 
-    with open(BALL_TRACKING_INPUT_FILE, "r") as f:
-        print(f"Opening {BALL_TRACKING_INPUT_FILE}")
-        ball_tracking_by_frame = json.load(f)
+    with open(BALL_TRACKING_CLASS_FILE, "rb") as f:
+        print(f"Opening {BALL_TRACKING_CLASS_FILE}")
+        ball_tracker = pickle.load(f)
 
     video_points = [
         coordinate
@@ -317,13 +320,9 @@ def live_homography_graph(
 
     window_name = "Pickleball Court"
 
-    # JSON dictionary keys are strings, so sort them numerically.
-    frame_numbers = sorted(
-        predictions_by_frame.keys(),
-        key=lambda frame: int(frame)
-    )
+    ball_tracking_stats = ball_tracker.tracker
 
-    if len(frame_numbers) == 0:
+    if len(ball_tracking_stats) == 0:
         print("No frames were found.")
         return
 
@@ -337,7 +336,7 @@ def live_homography_graph(
         "Frame",
         window_name,
         0,
-        len(frame_numbers) - 1,
+        len(ball_tracking_stats) - 1,
         on_trackbar_change
     )
 
@@ -350,12 +349,12 @@ def live_homography_graph(
             window_name
         )
 
+        frame_number = 1
         # Only redraw when the slider changes.
         if frame_index != current_frame_index:
 
             current_frame_index = frame_index
 
-            frame_number = frame_numbers[frame_index]
             predictions_array = predictions_by_frame[frame_number]
 
             court_frame = PICKLEBALL_COURT_IMAGE.copy()
@@ -371,7 +370,7 @@ def live_homography_graph(
                 2
             )
 
-            frame_ball_tracking = ball_tracking_by_frame.get(
+            frame_ball_tracking = ball_tracking_stats.get(
                 frame_number
             )
 
@@ -382,7 +381,7 @@ def live_homography_graph(
                 "homography location"
             )
 
-            if location is None:
+            if location == (-1, -1):
                 continue
 
             ball_found = True
@@ -475,7 +474,7 @@ def live_homography_graph(
                 court_frame
             )
 
-        key = cv2.waitKey(20) & 0xFF
+        key = cv2.waitKey(33) & 0xFF
 
         if key == ord("q"):
             break
@@ -496,7 +495,7 @@ def live_homography_graph(
         # Next frame
         elif key == ord("d"):
             next_index = min(
-                len(frame_numbers) - 1,
+                len(ball_tracking_stats) - 1,
                 current_frame_index + 1
             )
 
@@ -507,6 +506,209 @@ def live_homography_graph(
             )
 
     cv2.destroyAllWindows()
+
+def shot_chart(
+    COURT_POINTS_INPUT_FILE: Path,
+    PREDICTIONS_INPUT_FILE: Path,
+    BALL_TRACKING_CLASS_FILE: Path,
+    VIDEO_FILE: Path,
+    bounce_angle_threshold: np.float64 = np.float64(40),
+    player_angle_difference_threshold: np.float64 = np.float64(95),
+    bounce_frame_cooldown: int = 5,
+    testing: bool = True,
+):
+
+    cap = cv2.VideoCapture(VIDEO_FILE)
+
+    if not cap.isOpened():
+        raise RuntimeError(f"Could not open video: {VIDEO_FILE}")
+
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+    PICKLEBALL_COURT_IMAGE = draw_pickleball_court()
+    
+    with open(COURT_POINTS_INPUT_FILE, "r") as f:
+        print(f"Opening {COURT_POINTS_INPUT_FILE}")
+        court_points = json.load(f)
+
+    with open(PREDICTIONS_INPUT_FILE, "r") as f:
+        print(f"Opening {PREDICTIONS_INPUT_FILE}")
+        predictions_by_frame = json.load(f)
+        predictions_by_frame = {int(keys): vals for keys, vals in predictions_by_frame.items()}
+
+    with open(BALL_TRACKING_CLASS_FILE, "rb") as f:
+        print(f"Opening {BALL_TRACKING_CLASS_FILE}")
+        ball_tracker = pickle.load(f)
+
+    video_points = [
+        coordinate
+        for point_location, coordinate
+        in court_points["image_points"].items()
+    ]
+
+    video_points = np.array(video_points, dtype=np.float32)
+
+    HOMOGRAPHY_MATRIX = compute_homography(
+        video_points=video_points
+    )
+
+    frame_number = 1
+    bounce_cooldown = 0
+
+    while True:
+
+        success, video_frame = cap.read()
+
+        if not success:
+            break
+
+        court_image = PICKLEBALL_COURT_IMAGE.copy()
+
+        current_ball_frame_stats = ball_tracker.tracker.get(frame_number)
+        ball_location = current_ball_frame_stats.get("homography location")
+        ball_angle = current_ball_frame_stats.get("angle")
+        bounced = False
+        closest_player_to_ball = None
+        player_locations = []
+
+        if not ball_angle:
+            frame_number += 1
+            continue
+
+        if validate_bounce(
+            frame_number=frame_number,
+            ball_tracker=ball_tracker,
+            bounce_angle_threshold=bounce_angle_threshold,
+            bounce_frame_cooldown=bounce_frame_cooldown,
+            testing=testing
+        ):
+
+            if bounce_cooldown == 0:
+
+                print(f"Ball bounced on frame {frame_number}")
+                bounced = True
+                if ball_angle < player_angle_difference_threshold:
+                    cv2.circle(
+                        img=PICKLEBALL_COURT_IMAGE,
+                        center=ball_location,
+                        radius=5,
+                        color=(0, 0, 0),
+                        thickness=3
+                    )
+
+                bounce_cooldown = bounce_frame_cooldown
+
+
+        if bounce_cooldown > 0 and not bounced: 
+
+            bounce_cooldown -= 1
+
+
+        for pred in predictions_by_frame[frame_number]:
+
+            if pred['class'] == 'ball' or 'box' not in pred: continue
+
+            coordinates, center = get_coordinates_and_center(prediction=pred)
+
+            location = detection_of_court_points(
+                box=np.array(pred['box'], dtype=np.float32),
+                H=HOMOGRAPHY_MATRIX
+            )
+
+            player_locations.append((location, center))
+
+            if ball_angle >= player_angle_difference_threshold and bounced:
+
+                ballx, bally = ball_location
+                playerx, playery = location
+
+                current_pixels_away = np.hypot(playerx - ballx, playery - bally)
+                
+                if not closest_player_to_ball:
+
+                    closest_player_to_ball = [location, current_pixels_away]
+
+                else:
+
+                    if current_pixels_away < closest_player_to_ball[1]:
+                        closest_player_to_ball = [location, current_pixels_away]
+
+            cv2.circle(
+                img=court_image,
+                center=location,
+                radius=1,
+                color=(0, 0, 0),
+                thickness=1
+            )
+
+            cv2.putText(
+                court_image,
+                pred['class'],
+                (
+                    location[0],
+                    max(location[1] - 10, 15)
+                ),
+                cv2.FONT_HERSHEY_COMPLEX,
+                0.6,
+                (0, 0, 0),
+                2
+            )
+
+        if ball_angle >= player_angle_difference_threshold and bounced:
+            print(f"Ball hit by player, location = {closest_player_to_ball[0]}")
+            cv2.circle(
+                img=PICKLEBALL_COURT_IMAGE,
+                center=closest_player_to_ball[0],
+                radius=5,
+                color=(0, 0, 0),
+                thickness=3
+            )
+
+        cv2.putText(
+            court_image,
+            f"Frame: {frame_number}",
+            (10, 25),
+            cv2.FONT_HERSHEY_COMPLEX,
+            0.6,
+            (0, 0, 0),
+            2
+        )
+
+        # Resize court image to match the video frame's height.
+        video_height, video_width = video_frame.shape[:2]
+        court_height, court_width = court_image.shape[:2]
+
+        scale = video_height / court_height
+
+        resized_court_width = int(court_width * scale)
+
+        court_frame = cv2.resize(
+            court_image,
+            (resized_court_width, video_height)
+        )
+
+        # Combine horizontally.
+        side_by_side = cv2.hconcat([
+            video_frame,
+            court_frame
+        ])
+
+        cv2.imshow(
+            "Video and Pickleball Court",
+            side_by_side
+        )
+
+        delay = max(1, int(1000 / fps))
+        key = cv2.waitKey(delay) & 0xFF
+
+        if key == ord("q"):
+            break
+
+        frame_number += 1
+
+    cv2.destroyAllWindows()
+
 
 if __name__ == "__main__":
 
@@ -538,8 +740,6 @@ if __name__ == "__main__":
     ball_tracker = BallTracker(homography_matrix=H)
 
     run_predictions(COURT_POINTS_INPUT_FILE=COURT_POINTS_INPUT_FILE, PREDICTIONS_INPUT_FILE=PREDICTIONS_INPUT_FILE, BALL_TRACKING_OUTPUT_FILE=BALL_TRACKING_FILE, ball_tracker=ball_tracker)
-
-    # live_homography_graph(COURT_POINTS_INPUT_FILE=COURT_POINTS_INPUT_FILE, PREDICTIONS_INPUT_FILE=PREDICTIONS_INPUT_FILE, BALL_TRACKING_INPUT_FILE=BALL_TRACKING_FILE)
 
 
 

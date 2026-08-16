@@ -10,14 +10,13 @@ from side_functions import find_velocities, get_coordinates_and_center, run_pred
 
 BASE_DIR = Path(__file__).parent.parent
 
-def find_angles(ball_tracker: dict) -> list:
+def find_angles(ball_tracker: dict, bounce_angle_threshold: np.float64 = np.float64(40), angle_padding: int = 5) -> list:
 
     frame_id = 2
     angles = {}
+    cur_pad = 0
 
     while frame_id < len(ball_tracker) - 1:
-
-        print(f"Finding angles for frame {frame_id}")
 
         # find locations
         x1, y1 = ball_tracker[frame_id - 1]['vision model location']
@@ -29,20 +28,42 @@ def find_angles(ball_tracker: dict) -> list:
         v2 = np.array([x3 - x2, y3 - y2])
 
         # normalize vectors in case they have different lengths (only care about direction)
-        v1 = v1 / np.linalg.norm(v1)
-        v2 = v2 / np.linalg.norm(v2)
+
+        v1norm = np.linalg.norm(v1)
+        if v1norm > 0:
+            v1 = v1 / v1norm
+        else:
+            v1 = np.zeros_like(v1)
+
+        v2norm = np.linalg.norm(v2)
+        if v2norm > 0:
+            v2 = v2 / v2norm
+        else:
+            v2 = np.zeros_like(v2)
 
         # compute dot product to measure similarity between directions
         dot = np.clip(np.dot(v1, v2), -1, 1)
 
         # convert dot product into angle
         angle = np.arccos(dot)      # radians
-
+        
         # convert to degrees
         angle_deg = np.degrees(angle)
 
         # save angle
-        angles[frame_id] = angle_deg
+        angles[frame_id] = {
+            'angle': angle_deg
+        }
+
+        ball_tracker[frame_id]['angle'] = angle_deg
+        
+        if angle_deg > bounce_angle_threshold:
+
+            if cur_pad == 0:
+                print(f"The ball bounced on frame {frame_id} with an angle of {angle_deg}")
+                cur_pad = angle_padding
+
+        if cur_pad > 0: cur_pad -= 1
 
         frame_id += 1
 
@@ -73,12 +94,6 @@ if __name__ == "__main__":
     cap = cv2.VideoCapture(VIDEO_FILE)
     fps = cap.get(cv2.CAP_PROP_FPS)
 
-    velocities = find_velocities(ball_track=ball_tracker, fps=fps)
-
     angles = find_angles(ball_tracker=ball_tracker)
 
-    max_angle = float('-inf')
-    for frame_id, angle in angles.items():
-
-        print(f"Frame {frame_id}: {angle} degrees")
 

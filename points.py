@@ -2,10 +2,16 @@ import cv2
 import json
 import numpy as np
 from pathlib import Path
+import os
 
-def points(VIDEO_FILENAME: str):
+from scripts.side_functions import get_court_points
 
-    VIDEO_PATH = f"input/{VIDEO_FILENAME}.mp4"
+def points(VIDEO_PATH: Path):
+
+    parts = VIDEO_PATH.parts
+    VIDEO_FILENAME = parts[-1].split('.')[0]
+
+    VIDEO_PATH = str(VIDEO_PATH)
     OUTPUT_PATH = f"output/court_points/{VIDEO_FILENAME}_court_points.json"
 
     # Click these landmarks in this exact order.
@@ -98,7 +104,6 @@ def points(VIDEO_FILENAME: str):
 
         print(f"Saved court points to {OUTPUT_PATH}")
 
-
     original_frame = get_frame(VIDEO_PATH, frame_number=0)
     display_frame = original_frame.copy()
 
@@ -184,4 +189,9 @@ def points(VIDEO_FILENAME: str):
 
 if __name__ == "__main__":
 
-    None
+    video_filename = "18"
+
+    VIDEO_PATH = os.path.join("input", f"{video_filename}.mp4")
+    OUTPUT_PATH = os.path.join("output", "court_points", f"{video_filename}_court_points.json")
+
+    get_court_points(VIDEO_PATH=VIDEO_PATH, OUTPUT_PATH=OUTPUT_PATH)
