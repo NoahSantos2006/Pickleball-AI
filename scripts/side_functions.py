@@ -5,7 +5,7 @@ import cv2
 import time
 import sys
 import os
-
+import matplotlib.pyplot as plt
 from scripts.ball_tracker import BallTracker
 
 BASE_DIR = Path(__file__).parent.parent
@@ -24,32 +24,265 @@ def get_coordinates_and_center(prediction: dict) -> tuple:
 
     return [x1, y1, x2, y2], (x, y)
 
+def detection_of_court_points(box: tuple, H: np.array) -> tuple:
+
+    x1, y1, x2, y2 = box
+
+    # Find the center of the x coordinate
+    ground_x = (x1 + x2) / 2
+    ground_y = y2
+
+    video_point = np.array(
+        [[[ground_x, ground_y]]],
+        dtype=np.float32
+    )
+
+    court_point = cv2.perspectiveTransform(video_point, H)
+
+    court_x, court_y = court_point[0, 0]
+
+    return int(court_x), int(court_y)
+
+def plot_ball_trajectory(
+    ball_dict: dict, 
+    frame_num: int, 
+    window: int = 10):
+    """
+    Plot the ball's vision-model trajectory around a specific frame.
+
+    Parameters
+    ----------
+    ball_dict : dict
+        Dictionary keyed by frame number as strings.
+
+    frame_num : int
+        Frame you want to inspect.
+
+    window : int
+        Number of frames before and after frame_num to plot.
+    """
+
+    print(f"Plotting ball's trajectory...")
+
+    start_frame = frame_num - window
+    end_frame = frame_num + window
+
+    xs = []
+    ys = []
+    frames = []
+    estimations = []
+
+    for frame in range(start_frame, end_frame + 1):
+
+        # Your dictionary uses strings for frame keys
+        frame_data = ball_dict.get(frame)
+
+        if frame_data is None:
+            continue
+
+        location = frame_data.get("vision model location")
+
+        # Skip frames without a location
+        if location is None or len(location) < 2:
+            continue
+
+        x, y = location
+
+        xs.append(x)
+        ys.append(y)
+        frames.append(frame)
+        estimations.append(frame_data.get("estimation", False))
+
+    if not frames:
+        print(f"No ball locations found around frame {frame_num}")
+        return
+
+    # Plot trajectory
+    plt.figure(figsize=(10, 8))
+
+    plt.plot(xs, ys, marker="o")
+
+    # Label every point with its frame number
+    for x, y, frame, estimation in zip(
+        xs, ys, frames, estimations
+    ):
+        label = str(frame)
+
+        if estimation:
+            label += " (est)"
+
+        plt.annotate(
+            label,
+            (x, y),
+            xytext=(5, 5),
+            textcoords="offset points"
+        )
+
+    # Highlight the requested frame
+    if frame_num in frames:
+        index = frames.index(frame_num)
+
+        plt.scatter(
+            xs[index],
+            ys[index],
+            s=150,
+            facecolors="none",
+            edgecolors="black",
+            linewidths=2
+        )
+
+    plt.xlabel("X position (pixels)")
+    plt.ylabel("Y position (pixels)")
+    plt.title(
+        f"Ball trajectory: frames {start_frame}–{end_frame}"
+    )
+
+    # Image coordinates have Y increasing downward,
+    # so this makes the graph visually match the video.
+    plt.gca().invert_yaxis()
+
+    plt.grid()
+    plt.show()
+
+def ball_near_player(
+    frame_id: int,
+    predictions_by_frame: dict,
+    ball_center: tuple,
+    HOMOGRAPHY_MATRIX: np.array,
+    PLAYER_WIDTH_PADDING_RATIO: float = 0.20,
+    PLAYER_HEIGHT_PADDING_RATIO: float = 0.10
+):
+
+    found_player_near_ball = False
+    closest_player_to_ball = None
+    player_predictions = predictions_by_frame.get(frame_id)
+
+    for pred in player_predictions:
+    
+        if pred['class'] == "ball" or not pred.get('box'): continue
+
+        player_height = pred.get('height')
+        player_width = pred.get("width")
+        horizontal_padding = int(player_width * PLAYER_WIDTH_PADDING_RATIO)
+        vertical_padding = int(player_height * PLAYER_HEIGHT_PADDING_RATIO)
+
+        ball_x, ball_y = ball_center
+        player_x1, player_y1, player_x2, player_y2 = pred.get('box')
+        
+        location = detection_of_court_points(
+            box=np.array(pred['box'], dtype=np.float32),
+            H=HOMOGRAPHY_MATRIX
+        )
+
+        ballx, bally = ball_center
+        playerx, playery = location
+
+        current_pixels_away = np.hypot(playerx - ballx, playery - bally)
+        
+        if closest_player_to_ball is None:
+
+            closest_player_to_ball = [location, current_pixels_away]
+
+        else:
+
+            if current_pixels_away < closest_player_to_ball[1]:
+                closest_player_to_ball = [location, current_pixels_away]
+
+        if not found_player_near_ball:
+
+            padded_x1 = player_x1 - horizontal_padding
+            padded_y1 = player_y1 - vertical_padding
+            padded_x2 = player_x2 + horizontal_padding
+            padded_y2 = player_y2 + vertical_padding
+
+            if (
+                padded_x1 <= ball_x <= padded_x2 and
+                padded_y1 <= ball_y <= padded_y2
+            ):
+
+                found_player_near_ball = True
+
+    if found_player_near_ball:
+        return True, closest_player_to_ball[0] # player location
+
+    return False, (-1, -1)
+
 def validate_bounce(
-        frame_number: int, 
+        frame_id: int, 
         ball_tracker: BallTracker, 
         bounce_angle_threshold: np.float64, 
         bounce_frame_cooldown: int, 
-        bounce_window: int = 3,
-        slowdown_velocity_threshold: int = 20,
+        bounce_debugging_path: Path = None,
+        zeros_thershold: int = 5,
+        bounce_window: int = 4,
+        slowdown_velocity_threshold: int = 12,
         consecutive_non_degrees_threshold: int = 3,
-        testing: bool = True
+        debug: bool = True,
+        angle_threshold_with_sign_change: float = 20.0,
+        speed_threshold: float = 2.0,
+        bounce_angle_with_low_speed_threshold: float = 100.0,
+        max_bounce_angle: float = 100.0,                        # if the bounce angle is higher than 100 degrees it's most likely hit by a player,
+        minimum_velocity_change_threshold: float = 2.0
+
     ):
 
-    current_ball_frame_stats = ball_tracker.tracker.get(frame_number)
-    next_ball_frame_stats = ball_tracker.tracker.get(frame_number + 1, None)
+    def local_speed_minima(
+        frame_id: int,
+        ball_tracker: dict
+    ):
+
+        minimum = True
+        start_frame, end_frame = max(2, frame_id - bounce_window), min(len(ball_tracker) - 1, frame_id + bounce_window)
+        speed_window = []
+        # if frame = 5 then we go through [2, 3, 4, 5, 6, 7, 8]
+        for frame in range(start_frame + 1, end_frame):
+
+            if (
+                'speed' not in ball_tracker[frame] or
+                'speed' not in ball_tracker[frame - 1]
+            ): return False
+
+            speed_window.append((float(np.round(ball_tracker[frame]['speed'], 2)), frame))
+
+            if frame == start_frame: continue
+            if speed_window:
+
+                if frame <= frame_id and np.round(ball_tracker[frame]['speed'], 2) >= np.round(ball_tracker[frame - 1]['speed'], 2):
+
+                    minimum = False
+                    break
+
+                # ex frame = 143, frame_id = 142 -> if 143's speed = 23 and 142's speed = 26.46 then minimum = False
+                if frame > frame_id and np.round(ball_tracker[frame]['speed'], 2) <= np.round(ball_tracker[frame - 1]['speed'], 2):
+
+                    minimum = False
+                    break
+
+        if minimum:
+            return True
+
+        return False
+
+    previous_ball_frame_stats = ball_tracker.tracker.get(frame_id - 1, None)
+    current_ball_frame_stats = ball_tracker.tracker.get(frame_id, None)
+    next_ball_frame_stats = ball_tracker.tracker.get(frame_id + 1, None)
+    next_next_ball_frame_stats = ball_tracker.tracker.get(frame_id + 2, None)
 
     if (
-        (frame_number == len(ball_tracker.tracker)) or
+        (frame_id == len(ball_tracker.tracker)) or
+        ('velocity' not in previous_ball_frame_stats) or
         ('velocity' not in current_ball_frame_stats) or
-        ('velocity' not in next_ball_frame_stats)
-    ): return False
+        ('velocity' not in next_ball_frame_stats) or 
+        ('velocity' not in next_next_ball_frame_stats)
+    ): 
 
-    frame_window = []
-    curr_frame, end_frame = max(frame_number - bounce_window, 1), min(frame_number + bounce_window, len(ball_tracker.tracker))
+        if debug:
+            with open(bounce_debugging_path, "a") as f:
+                f.write("\n\n")
 
-    if not testing:
-        print(f"{curr_frame} to {end_frame}", end=" ")
+        return False
 
+    curr_frame, end_frame = max(frame_id - bounce_window, 1), min(frame_id + bounce_window, len(ball_tracker.tracker))
     consecutive_non_degrees = 0
 
     # if the ball wasn't found and it's suddenly found, the tracker gets a spike in location which causes a faulty detection
@@ -65,18 +298,19 @@ def validate_bounce(
         Frame 102 ball is 0.00 degrees at velocity (-2.0, 25.0)
     """
     positive_velocities = []
+    bounce_angles = []
     while curr_frame <= end_frame:
 
-        cur_frame_stats = ball_tracker.tracker.get(curr_frame)
-        temp_cur_angle = cur_frame_stats.get('angle', None)
-        velocity = cur_frame_stats.get('velocity', None)
+        temp_frame_stats = ball_tracker.tracker.get(curr_frame)
+        temp_cur_angle = temp_frame_stats.get('angle', None)
+        velocity = temp_frame_stats.get('velocity', None)
 
         # if velocity == None
         if not velocity:
             curr_frame += 1
             continue
 
-        curr_vx, curr_vy = velocity
+        temp_vx, temp_vy = velocity
 
         if temp_cur_angle <= 0.1:
             consecutive_non_degrees += 1
@@ -84,61 +318,124 @@ def validate_bounce(
             consecutive_non_degrees = 0
 
         # if velo[0:3] < 0 and velo[3] > 0 and velo[4:7] < 0
-        if curr_vy < 0: positive_velocities.append(False)
+        if temp_vy < 0: positive_velocities.append(False)
         else: positive_velocities.append(True)
+
+        if curr_frame == frame_id:
+            if sum(bounce_angles) == 0: zeros_before_frame = True
+            else: zeros_before_frame = False
+        else:
+            bounce_angles.append(temp_cur_angle)
 
         curr_frame += 1
 
+    next_consecutive_estimations = 0
+    for frame in range(frame_id + 1, min(frame_id + 6, len(ball_tracker.tracker))):
+
+        estimation = ball_tracker.tracker[frame].get('estimation')
+
+        if estimation:
+            next_consecutive_estimations += 1
+        else:
+            break
+
+    # get all data
+    prev_location = previous_ball_frame_stats.get("vision model location")
+    prev_bounce_velo = previous_ball_frame_stats.get("velocity")
+
     cur_bounce_angle = current_ball_frame_stats.get("angle")
     cur_bounce_velo = current_ball_frame_stats.get('velocity')
+    cur_location = current_ball_frame_stats.get("vision model location")
 
     next_bounce_angle = next_ball_frame_stats.get("angle")
     next_bounce_velo = next_ball_frame_stats.get('velocity')
+    next_location = next_ball_frame_stats.get("vision model location")
+
+    next_next_bounce_angle = next_next_ball_frame_stats.get("angle")
+    next_next_bounce_velo = next_next_ball_frame_stats.get("velocity")
 
     angle_change = False
     sign_change = False
     slowdown = False
+
+    x1, y1 = prev_location
+    x3, y3 = next_location
+
+    vx = (x3 - x1) / 2
+    vy = (y3 - y1) / 2
     
+    speed = np.hypot(vx, vy)
+
     cur_vx, cur_vy = cur_bounce_velo
     next_vx, next_vy = next_bounce_velo
+    next_next_vx, next_next_vy = next_next_bounce_velo
     
-    if not testing:
-        print(positive_velocities, f"curr_vy = {cur_vy}; next_vy = {next_vy} on frame {frame_number}")
+    if debug:
+        with open(bounce_debugging_path, "a") as f:
+            f.write(f"curr_vy = {cur_vy:.3f}; next_vy = {next_vy:.3f}\n\n")
 
     if cur_vy * next_vy < 0: sign_change = True
-    if abs(next_vy - cur_vy) > slowdown_velocity_threshold: slowdown = True
-    if (cur_bounce_angle > bounce_angle_threshold): angle_change = True
+    if abs(next_next_vy - cur_vy) > slowdown_velocity_threshold: slowdown = True
+    if (
+        (cur_bounce_angle > bounce_angle_threshold)
+    ): angle_change = True
+
+    local_minima = local_speed_minima(frame_id=frame_id, ball_tracker=ball_tracker.tracker)
 
     if (
-        sum(positive_velocities) == 1 and (next_vy > 0 or cur_vy > 0) or 
-        sum(positive_velocities) == len(positive_velocities) - 1 and (next_vy < 0 or cur_vy < 0)
+        sum(positive_velocities) == 1 and (next_vy > 0 or cur_vy > 0) or                                # if there's a noise with vy sign change
+        sum(positive_velocities) == len(positive_velocities) - 1 and (next_vy < 0 or cur_vy < 0) or     # ^
+        zeros_before_frame or                                                                           # if the angles leading up to frame_id is all 0
+        cur_bounce_angle > max_bounce_angle or                                                          # if angle > max_bounce_angle then it's most likely a player hit
+        next_bounce_angle > max_bounce_angle or                                                         # ^
+        next_next_bounce_angle > max_bounce_angle or                                                    # ^        
+        next_consecutive_estimations > 3 or                                                             # if the next 3 ball locations are estimations
+        abs(next_vy - cur_vy) < minimum_velocity_change_threshold or                                    # minimum y velocity change threshold (for noise) 
+        cur_bounce_angle == 90.0 or                                                                     # if something wrong with the frame 
+        cur_location == next_location                                                                   # repeat frame
     ):
 
         return False
 
     if (
-        angle_change and (sign_change or slowdown) and 
-        consecutive_non_degrees < consecutive_non_degrees_threshold
-    ): return True
+        (speed > speed_threshold or cur_bounce_angle > bounce_angle_with_low_speed_threshold) and
+        (local_minima or
+        angle_change or
+        ((sign_change and angle_change > angle_threshold_with_sign_change) or slowdown) and 
+        consecutive_non_degrees < consecutive_non_degrees_threshold)
+    ): 
+        return True
     
     return False
 
 def find_angles(
-        ball_tracker_class: BallTracker, 
+        ball_tracker_class: BallTracker,
+        predictions_dict: dict,
+        DEBUG_PATH: Path,
+        BOUNCE_DEBUG_PATH: Path = None,
         bounce_angle_threshold: np.float64 = np.float64(40), 
         angle_padding: int = 5,
         actual_bounces_path: Path = None,
-        testing: bool = True
-    ) -> list:
+        debug: bool = False,
+        correct_frame_disparity: int = 5,
+    ) -> tuple:
 
     actual_bounces = []
 
     if actual_bounces_path:
 
+        if not os.path.isfile(actual_bounces_path):
+
+            print(f"Could not find the training data for bounces.")
+            os._exit(1)
+
         with open(actual_bounces_path, "r") as f:
 
             actual_bounces = set([int(line.strip()) for line in f])
             og_length = len(actual_bounces)
+
+        with open(BOUNCE_DEBUG_PATH, "w") as f:
+            pass
         
     ball_tracker = ball_tracker_class.tracker
 
@@ -149,13 +446,13 @@ def find_angles(
         break
 
     frame_id = 1
-    angles = {}
     cur_pad = 0
     total_false_positives = 0
     false_positives = []
+    true_positives = []
 
     # bounce detection
-    while frame_id < len(ball_tracker) - 1:
+    while frame_id < len(ball_tracker):
         
         if (
             frame_id < 2 or
@@ -165,7 +462,10 @@ def find_angles(
 
         ):
 
-            ball_tracker[frame_id]['angle'] = float('-inf')
+            with open(DEBUG_PATH, "a") as file:
+
+                file.write(f"Skipped frame {frame_id}\n")
+
             frame_id += 1
             continue
 
@@ -174,10 +474,10 @@ def find_angles(
         x2, y2 = ball_tracker[frame_id]['vision model location']
         x3, y3 = ball_tracker[frame_id + 1]['vision model location']
 
-        vx = x2 - x1
-        vy = y2 - y1
+        vx = (x3 - x1) / 2
+        vy = (y3 - y1) / 2
 
-        # calculates magnitude of a 2D velocity vecotry (pythagorean theorem)
+        # calculates magnitude of a 2D velocity vector (pythagorean theorem)
         speed = np.hypot(vx, vy)
 
         # movement vectors
@@ -207,40 +507,61 @@ def find_angles(
         # convert to degrees
         angle_deg = np.degrees(angle)
 
-        # save angle
-        angles[frame_id] = {
-            'angle': angle_deg
-        }
-
-        if not testing:
-            print(f"Frame {frame_id} ball is {angle_deg:.2f} degrees at velocity ({vx}, {vy})", end=" ")
+        if debug:
+            with open(BOUNCE_DEBUG_PATH, "a") as f:
+                f.write(f"Frame {frame_id} ball is {angle_deg:.2f} degrees at velocity ({vx:.3f}, {vy:.3f}) with speed {speed:.3f} ")
 
         ball_tracker[frame_id]['angle'] = angle_deg
         ball_tracker[frame_id]['velocity'] = (vx, vy)
+        ball_tracker[frame_id]['speed'] = speed
         
         if validate_bounce(
-            frame_number=frame_id,
+            frame_id=frame_id,
             ball_tracker=ball_tracker_class,
             bounce_frame_cooldown=angle_padding,
             bounce_angle_threshold=bounce_angle_threshold,
-            testing=testing
+            debug=debug,
+            bounce_debugging_path=BOUNCE_DEBUG_PATH
         ):
 
             false_positive = True
             if cur_pad == 0:
-                
-                for frame in [frame_id - 1, frame_id, frame_id + 1]:
+
+                # if the program finds a bounce +- correct_frame_disparity from an actual bounce then we still count it
+                start_frame= max(0, frame_id - correct_frame_disparity)
+                end_frame =  min(len(ball_tracker), frame_id + correct_frame_disparity)
+                same_bounce_frames = set()
+
+                for frame in range(start_frame + 1, end_frame):
+
+                    same_bounce_frames.add(frame)
+
+                for frame in same_bounce_frames:
 
                     if frame in actual_bounces:
                         actual_bounces.discard(frame)
+                        true_positives.append(frame_id)
                         false_positive = False
                         break
 
-                if false_positive: 
-                    false_positives.append(frame_id)
-                    total_false_positives += 1
+                # if all the angles from the last time it bounced to the current frame id is <= 0.1 then we count it as the same as the last bounce
+                # i'll probably change this later so that if the ball > estimation threshold then we don't count it as a bounce and go next
+                if false_positive:
 
-                print(f"\nThe ball bounced on frame {frame_id}.\n")
+                    all_zeros = False
+                    if true_positives:
+
+                        all_zeros = True
+                        for frame in range(last_bounced + correct_frame_disparity, frame_id):
+                            if ball_tracker[frame]['angle'] >= 0.1:
+                                all_zeros = False
+                                break
+
+                    if not all_zeros:
+                        false_positives.append(frame_id)
+                        total_false_positives += 1
+
+                last_bounced = frame_id
                 cur_pad = angle_padding
 
         if cur_pad > 0: cur_pad -= 1
@@ -252,25 +573,38 @@ def find_angles(
     if actual_bounces_path:
 
         score = og_length - len(actual_bounces)
-        print(f"\nWe detected {score} / {og_length} bounces\n{total_false_positives} false positives -> {false_positives}\nWe still have {actual_bounces}")
+        actual_bounces = sorted(list(actual_bounces))
+        print(f"\nWe detected {score} / {og_length} bounces\n"
+              f"{len(true_positives)} true positives -> {true_positives}\n"
+              f"{total_false_positives} false positives -> {false_positives}\n"
+              f"{len(actual_bounces)} false negatives -> {actual_bounces}")
+
+    if debug:
+        return true_positives, false_positives, actual_bounces, ball_tracker_class
 
     return ball_tracker_class
 
-def run_predictions(COURT_POINTS_INPUT_FILE: Path, PREDICTIONS_INPUT_FILE: Path, BALL_TRACKING_OUTPUT_FILE: Path, ball_tracker: BallTracker) -> BallTracker:
-
-    with open(COURT_POINTS_INPUT_FILE, "r") as f:
-    
-        print(f"Opening {COURT_POINTS_INPUT_FILE}")
-        court_points = json.load(f)
+def run_predictions(
+        COURT_POINTS_INPUT_FILE: Path, 
+        PREDICTIONS_INPUT_FILE: Path, 
+        BALL_TRACKING_OUTPUT_FILE: Path, 
+        ball_tracker: BallTracker,
+        DEBUG_PATH: Path,
+        BOUNCE_DEBUG_PATH: Path,
+        debug: bool = False
+    ) -> BallTracker:
         
     with open(PREDICTIONS_INPUT_FILE, "r") as f:
 
         print(f"Opening {PREDICTIONS_INPUT_FILE}")
         predictions_by_frame = json.load(f)
 
-    for frame_number, predictions_array in predictions_by_frame.items():
+    number_of_repeat_frames = 0
 
-        # print(f"Looking through frame {frame_number} out of {len(predictions_by_frame)}")
+    for frame_id, predictions_array in predictions_by_frame.items():
+
+        frame_id = int(frame_id)
+
         current_ball_locations = []
     
         for pred in predictions_array:
@@ -278,17 +612,35 @@ def run_predictions(COURT_POINTS_INPUT_FILE: Path, PREDICTIONS_INPUT_FILE: Path,
             if pred['class'] == 'ball' and pred['confidence'] >= 0.5:
 
                 coordinates, center = get_coordinates_and_center(prediction=pred)
-                print(f"Current ball coordinates: {center}")
                 current_ball_locations.append(center)
 
         ball_tracker.update(
-            frame_number=int(frame_number), 
+            frame_id=frame_id, 
             ball_locations=current_ball_locations
         )
 
-    ball_tracker = find_angles(ball_tracker_class=ball_tracker)
+        if debug:
 
-    return ball_tracker
+            if frame_id > 1:
+
+                previous_location = ball_tracker.tracker[frame_id - 1].get("vision model location", None)
+                current_location = ball_tracker.tracker[frame_id].get("vision model location", None)
+
+                if previous_location and current_location:
+
+                    if previous_location == current_location and current_location not in ball_tracker.false_positives:
+
+                        number_of_repeat_frames += 1
+    if debug:
+        print(f"We found {number_of_repeat_frames} repeat frames")
+
+    return find_angles(
+            ball_tracker_class=ball_tracker, 
+            predictions_dict=predictions_by_frame, 
+            BOUNCE_DEBUG_PATH=BOUNCE_DEBUG_PATH,
+            DEBUG_PATH=DEBUG_PATH, 
+            debug=debug
+        )
 
 def find_velocities(ball_track: dict, fps: int = 30) -> dict:
 
@@ -322,31 +674,74 @@ def find_velocities(ball_track: dict, fps: int = 30) -> dict:
 
 COURT_HEIGHT = 44
 COURT_WIDTH = 20
+PICKLEBALL_COURT_SCALE = 20
+PICKLEBALL_COURT_PADDING = 50
 
-SCALE = 20
-PADDING = 50
+TENNIS_COURT_LENGTH = 23.77
+TENNIS_COURT_WIDTH = 10.97
+TENNIS_COURT_SCALE = 25
+TENNIS_COURT_PADDING = 30
 
-def compute_homography(COURT_POINTS_PATH: Path, top_down_points = np.array([
-                                                                [PADDING, PADDING + 44 * SCALE],                # near left baseline          
-                                                                [PADDING + 20 * SCALE, PADDING + 44 * SCALE],   # near right baseline
-                                                                [PADDING + 20 * SCALE, PADDING],                # far right baseline
-                                                                [PADDING, PADDING],                             # far left baseline
-                                                                [PADDING, PADDING + 29 * SCALE],                # near left kitchen
-                                                                [PADDING + 20 * SCALE, PADDING + 29 * SCALE],   # near right kitchen
-                                                                [PADDING, PADDING + 15 * SCALE],                # far right kitchen
-                                                                [PADDING + 20 * SCALE, PADDING + 15 * SCALE]],  # far left kitchen
-                                                                dtype=np.float32)
-) -> np.array:
 
-    with open(COURT_POINTS_PATH, "r") as f:
-    
-        video_points = json.load(f)
+def compute_homography(COURT_POINTS_PATH: Path, SPORT: str) -> np.array:
 
     court_points = []
-    for point_location, coordinates in video_points['image_points'].items():
 
-        court_points.append(coordinates)
+    with open(COURT_POINTS_PATH, "r") as f:
         
+        video_points = json.load(f)
+
+    if SPORT == "pickleball":
+
+        top_down_points = np.array([
+            [PICKLEBALL_COURT_PADDING, PICKLEBALL_COURT_PADDING + 44 * PICKLEBALL_COURT_SCALE],                # near left baseline          
+            [PICKLEBALL_COURT_PADDING + 20 * PICKLEBALL_COURT_SCALE, PICKLEBALL_COURT_PADDING + 44 * PICKLEBALL_COURT_SCALE],   # near right baseline
+            [PICKLEBALL_COURT_PADDING + 20 * PICKLEBALL_COURT_SCALE, PICKLEBALL_COURT_PADDING],                # far right baseline
+            [PICKLEBALL_COURT_PADDING, PICKLEBALL_COURT_PADDING],                             # far left baseline
+            [PICKLEBALL_COURT_PADDING, PICKLEBALL_COURT_PADDING + 29 * PICKLEBALL_COURT_SCALE],                # near left kitchen
+            [PICKLEBALL_COURT_PADDING + 20 * PICKLEBALL_COURT_SCALE, PICKLEBALL_COURT_PADDING + 29 * PICKLEBALL_COURT_SCALE],   # near right kitchen
+            [PICKLEBALL_COURT_PADDING, PICKLEBALL_COURT_PADDING + 15 * PICKLEBALL_COURT_SCALE],                # far right kitchen
+            [PICKLEBALL_COURT_PADDING + 20 * PICKLEBALL_COURT_SCALE, PICKLEBALL_COURT_PADDING + 15 * PICKLEBALL_COURT_SCALE]],  # far left kitchen
+            dtype=np.float32
+        )
+
+        for point_location, coordinates in video_points['image_points'].items():
+        
+            court_points.append(coordinates)
+
+    elif SPORT == "tennis":
+
+        top_down_points = np.array([
+            [TENNIS_COURT_PADDING, TENNIS_COURT_PADDING + 23.77 * TENNIS_COURT_SCALE],                              # 1 - near left doubles baseline
+            [TENNIS_COURT_PADDING + 1.37 * TENNIS_COURT_SCALE, TENNIS_COURT_PADDING + 23.77 * TENNIS_COURT_SCALE],  # 2 - near left singles baseline
+            [TENNIS_COURT_PADDING + 9.60 * TENNIS_COURT_SCALE, TENNIS_COURT_PADDING + 23.77 * TENNIS_COURT_SCALE],  # 3 - near right singles baseline
+            [TENNIS_COURT_PADDING + 10.97 * TENNIS_COURT_SCALE, TENNIS_COURT_PADDING + 23.77 * TENNIS_COURT_SCALE], # 4 - near right doubles baseline
+            [TENNIS_COURT_PADDING + 10.97 * TENNIS_COURT_SCALE, TENNIS_COURT_PADDING],                              # 5 - far right doubles baseline
+            [TENNIS_COURT_PADDING + 9.60 * TENNIS_COURT_SCALE, TENNIS_COURT_PADDING],                               # 6 - far right singles baseline
+            [TENNIS_COURT_PADDING + 1.37 * TENNIS_COURT_SCALE, TENNIS_COURT_PADDING],                               # 7 - far left singles baseline
+            [TENNIS_COURT_PADDING, TENNIS_COURT_PADDING],                                                           # 8 - far left doubles baseline
+            [TENNIS_COURT_PADDING + 1.37 * TENNIS_COURT_SCALE, TENNIS_COURT_PADDING + 18.285 * TENNIS_COURT_SCALE], # 9 - near left service line
+            [TENNIS_COURT_PADDING + 1.37 * TENNIS_COURT_SCALE, TENNIS_COURT_PADDING + 5.485 * TENNIS_COURT_SCALE],  # 10 - far left service line
+            [TENNIS_COURT_PADDING + 9.60 * TENNIS_COURT_SCALE, TENNIS_COURT_PADDING + 18.285 * TENNIS_COURT_SCALE], # 11 - near right service line
+            [TENNIS_COURT_PADDING + 9.60 * TENNIS_COURT_SCALE, TENNIS_COURT_PADDING + 5.485 * TENNIS_COURT_SCALE],  # 12 - far right service line
+            [TENNIS_COURT_PADDING + 5.485 * TENNIS_COURT_SCALE, TENNIS_COURT_PADDING + 18.285 * TENNIS_COURT_SCALE],# 13 - near centre service line
+            [TENNIS_COURT_PADDING + 5.485 * TENNIS_COURT_SCALE, TENNIS_COURT_PADDING + 5.485 * TENNIS_COURT_SCALE]],# 14 - far centre service line
+            dtype=np.float32
+        )
+
+        first_frame_court_points = video_points.get("1", [])
+        if not first_frame_court_points:
+
+            print(f"Could not find court points for the first frame.")
+            os._exit(1)
+
+        for keypoint_detection_dict in first_frame_court_points:
+        
+            curr_x = keypoint_detection_dict['x']
+            curr_y = keypoint_detection_dict['y']
+
+            court_points.append((curr_x, curr_y))
+                
     court_points = np.array(court_points, dtype=np.float32)
     
     H, mask = cv2.findHomography(
@@ -420,19 +815,19 @@ def get_court_points(VIDEO_PATH: Path, OUTPUT_PATH: Path):
                 2,
             )
 
-    def get_frame(video_path: str, frame_number: int = 0):
+    def get_frame(video_path: str, frame_id: int = 0):
 
         capture = cv2.VideoCapture(video_path)
 
         if not capture.isOpened():
             raise RuntimeError(f"Could not open video: {video_path}")
 
-        capture.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
+        capture.set(cv2.CAP_PROP_POS_FRAMES, frame_id)
         success, frame = capture.read()
         capture.release()
 
         if not success:
-            raise RuntimeError(f"Could not read frame {frame_number}")
+            raise RuntimeError(f"Could not read frame {frame_id}")
 
         return frame
 
@@ -453,7 +848,7 @@ def get_court_points(VIDEO_PATH: Path, OUTPUT_PATH: Path):
 
         print(f"Saved court points to {OUTPUT_PATH}")
 
-    original_frame = get_frame(VIDEO_PATH, frame_number=0)
+    original_frame = get_frame(VIDEO_PATH, frame_id=0)
     display_frame = original_frame.copy()
 
     window_name = "Click court points"

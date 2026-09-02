@@ -1,6 +1,7 @@
 import numpy as np
 import cv2
 import sys
+import os
 
 class BallTracker:
 
@@ -34,30 +35,30 @@ class BallTracker:
         self.first_frame_where_ball_is_found = 1
         self.false_positives_count = 0
 
-    def estimate_ball_location(self, frame_number: int, predictions: list):
+    def estimate_ball_location(self, frame_id: int, predictions: list):
 
         # if it's the first frame then the ball isn't found yet
-        if frame_number == 1:
+        if frame_id == 1:
 
             self.no_location_found = True
             chosen_ball_location = (-1, -1)
 
         # if it's the second frame we just use the last location
-        elif frame_number == 2:
+        elif frame_id == 2:
 
-            chosen_ball_location = self.tracker[frame_number - 1]['vision model location']
+            chosen_ball_location = self.tracker[frame_id - 1]['vision model location']
 
         # if frame number > 2 then we check if the ball's been found yet. if not then (-1, -1), else we use estimations from previous locations
-        elif frame_number > 2:
+        elif frame_id > 2:
 
-            if self.tracker[frame_number - 1]['vision model location'] == (-1, -1) or self.tracker[frame_number - 2]['vision model location'] == (-1, -1):
+            if self.tracker[frame_id - 1]['vision model location'] == (-1, -1) or self.tracker[frame_id - 2]['vision model location'] == (-1, -1):
 
                 chosen_ball_location = (-1, -1)
 
             else:
 
-                x1, y1 = self.tracker[frame_number - 2]['vision model location']
-                x2, y2 = self.tracker[frame_number - 1]['vision model location']
+                x1, y1 = self.tracker[frame_id - 2]['vision model location']
+                x2, y2 = self.tracker[frame_id - 1]['vision model location']
 
                 x_estimation = x2 + (x2 - x1)
                 y_estimation = y2 + (y2 - y1)
@@ -71,16 +72,18 @@ class BallTracker:
         if self.consecutive_estimations >= self.MAX_CONSECUTIVE_ESTIMATIONS:
 
             # start frame is our current frame number - the max estimations so ex: (Frame 650 - 30 = 620)
-            start_frame, i = frame_number - self.MAX_CONSECUTIVE_ESTIMATIONS, 1
+            start_frame, i = frame_id - self.MAX_CONSECUTIVE_ESTIMATIONS, 1
             temp_ball_tracker = BallTracker(
                 homography_matrix=self.HOMOGRAPHY_MATRIX, 
                 false_positives=self.false_positives
             )
-            # print(f"Creating a new ball tracker for frames {start_frame} - {frame_number}")
-            while start_frame < frame_number:
+
+
+            # print(f"Creating a new ball tracker for frames {start_frame} - {frame_id}")
+            while start_frame < frame_id:
 
                 temp_ball_tracker.update(
-                    frame_number=i, 
+                    frame_id=i, 
                     ball_locations=self.tracker[start_frame]['ball locations'],
                     allow_estimation=False
                 )
@@ -99,7 +102,7 @@ class BallTracker:
                 # print(f"Lost the ball. There were a total of {estimation_counter}/{len(temp_ball_tracker.tracker)} estimations")
                 start_frame -= (i - 1)
                 i = 1
-                while start_frame < frame_number:
+                while start_frame < frame_id:
 
                     self.tracker[start_frame] = {
                         'ball locations': temp_ball_tracker.tracker[i]['ball locations'],
@@ -117,7 +120,7 @@ class BallTracker:
 
                 start_frame -= (i - 1)
                 i = 1
-                while start_frame < frame_number:
+                while start_frame < frame_id:
 
                     self.tracker[start_frame] = temp_ball_tracker.tracker[i]
                     start_frame += 1
@@ -126,14 +129,14 @@ class BallTracker:
             if predictions:
 
                was_estimation = self.update(
-                    frame_number=frame_number,
+                    frame_id=frame_id,
                     ball_locations=predictions,
                     allow_estimation=False
                 )
 
                if not was_estimation:
                 self.is_estimation = False
-                chosen_ball_location = self.tracker[frame_number]['vision model location']
+                chosen_ball_location = self.tracker[frame_id]['vision model location']
 
         return chosen_ball_location
 
@@ -180,10 +183,10 @@ class BallTracker:
 
         self.no_location_found = False
 
-    def no_ball_found(self, frame_number: int, ball_locations: list = []) -> tuple:
+    def no_ball_found(self, frame_id: int, ball_locations: list = []) -> tuple:
 
         self.consecutive_no_detections += 1
-        return self.estimate_ball_location(frame_number=frame_number, predictions=ball_locations)
+        return self.estimate_ball_location(frame_id=frame_id, predictions=ball_locations)
 
     def fix_false_positives(self):
 
@@ -198,7 +201,7 @@ class BallTracker:
             for frame_id, frame_data in frames:
                 
                 self.update(
-                    frame_number=frame_id,
+                    frame_id=frame_id,
                     ball_locations=frame_data['ball locations']
                 )
 
@@ -207,9 +210,33 @@ class BallTracker:
         finally:
 
             self.fixing_false_positives = False
-        
+
+    def interpolate_estimations(self, frame_id):
+
+        start_frame = frame_id - 1
+        while start_frame > 0 and self.tracker[start_frame]['estimation']:
+
+            start_frame -= 1
+
+        if start_frame <= 0 or start_frame == frame_id - 1: return
+
+        frame_gap = frame_id - start_frame
+
+        start_pos = self.tracker[start_frame]['vision model location']
+        end_pos = self.tracker[frame_id]['vision model location']
+
+        for frame in range(start_frame + 1, frame_id):
+
+            ratio = (frame - start_frame) / frame_gap
+
+            x = start_pos[0] + ratio * (end_pos[0] - start_pos[0])
+            y = start_pos[1] + ratio * (end_pos[1] - start_pos[1])
+
+            self.tracker[frame]['vision model location'] = [x, y]
+            self.tracker[frame]['interpolation'] = True
+         
     # ball_locations is an array of ball locations from the model detection (not homographical)
-    def update(self, frame_number: int, ball_locations: list, allow_estimation=True):
+    def update(self, frame_id: int, ball_locations: list, allow_estimation=True):
 
         self.is_estimation = False
         nearest_ball_location = {}
@@ -219,7 +246,7 @@ class BallTracker:
 
             if allow_estimation:
                 # if we don't detect a ball we estimate using a simple slope
-                chosen_ball_location = self.no_ball_found(frame_number=frame_number)
+                chosen_ball_location = self.no_ball_found(frame_id=frame_id)
             else:
                 chosen_ball_location = (-1, -1)
 
@@ -232,19 +259,19 @@ class BallTracker:
             # if the location found is a false positive
             if ball_locations[0] in self.false_positives:
 
-                chosen_ball_location = self.no_ball_found(frame_number=frame_number)
+                chosen_ball_location = self.no_ball_found(frame_id=frame_id)
 
             else:
                 
                 self.consecutive_no_detections = 0
                 # if we are on the first frame then just pick the first one
-                if frame_number <= 1:
+                if frame_id <= 1:
 
                     chosen_ball_location = ball_locations[0]
 
                 else:
 
-                    prev_location = self.tracker[frame_number - 1]['vision model location']
+                    prev_location = self.tracker[frame_id - 1]['vision model location']
 
                     curr_x, curr_y = ball_locations[0]
                     prev_x, prev_y = prev_location
@@ -255,12 +282,10 @@ class BallTracker:
 
                     # if the ball location is too far from the previous ball location then we rule it as not the ball
                     elif prev_x - self.MAX_DISPLACEMENT_PX > curr_x or curr_x > prev_x + self.MAX_DISPLACEMENT_PX:
-                        # print(f"current x ({curr_x}) location is out of location padding\nprev_x = {prev_x} and location padding = {self.MAX_DISPLACEMENT_PX}")
-                        chosen_ball_location = self.estimate_ball_location(frame_number=frame_number, predictions=ball_locations)
+                        chosen_ball_location = self.estimate_ball_location(frame_id=frame_id, predictions=ball_locations)
 
                     elif prev_y - self.MAX_DISPLACEMENT_PX > curr_y  or curr_y > prev_y + self.MAX_DISPLACEMENT_PX: 
-                        # print(f"Current y location ({curr_y}) is out of location padding\nprev_x = {prev_x} and location padding = {self.MAX_DISPLACEMENT_PX}")
-                        chosen_ball_location = self.estimate_ball_location(frame_number=frame_number, predictions=ball_locations)
+                        chosen_ball_location = self.estimate_ball_location(frame_id=frame_id, predictions=ball_locations)
 
                     else:
 
@@ -297,20 +322,20 @@ class BallTracker:
             if not valid_locations:
                 if allow_estimation:
                     chosen_ball_location = self.no_ball_found(
-                        frame_number=frame_number
+                        frame_id=frame_id
                     )
                 else:
                     chosen_ball_location = (-1, -1)
                     self.is_estimation = True
 
-            elif frame_number <= 1 or frame_number - 1 not in self.tracker:
+            elif frame_id <= 1 or frame_id - 1 not in self.tracker:
                 # There is no previous frame to compare against.
                 chosen_ball_location = valid_locations[0]
 
             else:
                 
                 prev_x, prev_y = self.tracker[
-                    frame_number - 1
+                    frame_id - 1
                 ]["vision model location"]
 
                 if (prev_x, prev_y) == (-1, -1):
@@ -363,7 +388,7 @@ class BallTracker:
             self.fix_false_positives()
         
         # update self.tracker
-        self.tracker[int(frame_number)] = {
+        self.tracker[int(frame_id)] = {
             'ball locations': ball_locations,                       # all predictions found
             'homography location': homography_location,             # homographic location of ball
             'vision model location': chosen_ball_location,          # vision model location of ball
@@ -373,7 +398,8 @@ class BallTracker:
         }  
 
         # we made it so if the starting frames don't detect a ball we mark it as (-1, -1) and now we want to fix it
-        if self.no_location_found == True: self.fix_no_detections(last_frame=frame_number)
+        if self.no_location_found == True: self.fix_no_detections(last_frame=frame_id)
+        if not self.tracker[frame_id]['estimation']: self.interpolate_estimations(frame_id=frame_id)
 
         # print(f"------------------")
 

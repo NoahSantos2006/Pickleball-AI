@@ -23,21 +23,29 @@ from points import points
 
 if __name__ == "__main__":
 
-    video_filename = "21"
+    video_filename = "tennis"
+    sport = 'tennis'
+    debug=False
 
     API_KEY = os.getenv("API_KEY")
     VIDEO_FILE = Path(os.path.join("input", f"{video_filename}.mp4"))
-    BALL_TRACKING_CLASS_FILE = os.path.join("output", "BallTracking", f"{video_filename}_ball_tracking_class.pkl")
-    COURT_POINTS_FILE = os.path.join("output", "court_points", f"{video_filename}_court_points.json")
+    BALL_TRACKING_CLASS_FILE = os.path.join("output", "BallTracking", f"{video_filename}", f"{video_filename}_ball_tracking_class.pkl")
+    if sport == "pickleball":
+        COURT_POINTS_FILE = os.path.join("output", "court_points", f"{video_filename}_court_points.json")
+    elif sport == "tennis":
+        COURT_POINTS_FILE = os.path.join("output", "court_points", f"{video_filename}_court_points_from_model.json")
     PREDICTIONS_FILE = os.path.join("output", "predictions", f"{video_filename}_predictions.txt")
-    ACTUAL_BOUNCES_FILE = os.path.join("output", "BallTracking", f"{video_filename}_actual_bounces.txt")
+    ACTUAL_BOUNCES_FILE = os.path.join("output", "BallTracking", f"{video_filename}", f"{video_filename}_actual_bounces.txt")
 
     shot_chart(COURT_POINTS_INPUT_FILE=COURT_POINTS_FILE, 
                PREDICTIONS_INPUT_FILE=PREDICTIONS_FILE, 
                BALL_TRACKING_CLASS_FILE=BALL_TRACKING_CLASS_FILE,
                VIDEO_FILE=VIDEO_FILE,
-               testing=True
+               debug=debug,
+               graph_trajectory=False,
+               SPORT=sport
             )
+    
 
     
 

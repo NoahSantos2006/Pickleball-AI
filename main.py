@@ -30,18 +30,31 @@ def create_directories():
 
     OUTPUT_PATH = Path("output")
     ANNOTATED_OUTPUT_PATH = OUTPUT_PATH / "annotated_videos"
+    COURT_POINTS_OUTPUT_PATH = OUTPUT_PATH / "court_points"
     PREDICTIONS_OUTPUT_PATH = OUTPUT_PATH / "predictions"
+    BALL_TRACKING_OUTPUT_PATH = OUTPUT_PATH / "BallTracking"
     ANNOTATED_OUTPUT_PATH.mkdir(parents=True, exist_ok=True)
     PREDICTIONS_OUTPUT_PATH.mkdir(parents=True, exist_ok=True)
+    BALL_TRACKING_OUTPUT_PATH.mkdir(parents=True, exist_ok=True)
+    COURT_POINTS_OUTPUT_PATH.mkdir(parents=True, exist_ok=True)
 
 create_directories()
 
-def predict_with_tracker(video_path: Path, api_key: str):
+def predict_with_tracker(
+    video_path: Path,
+    api_key: str,
+    vision_model_id: int,
+    BALL_CONFIDENCE_THRESHOLD: float = 0.5,
+    PLAYER_CONFIDENCE_THRESHOLD: float = 0.8,
+    use_bytetrack: bool = False,
+):
 
     client = InferenceHTTPClient.init(
         api_url="https://serverless.roboflow.com",
         api_key=api_key
     )
+
+    should_exit = -1
 
     parts = video_path.parts
 
@@ -51,199 +64,8 @@ def predict_with_tracker(video_path: Path, api_key: str):
     INPUT_VIDEO = str(video_path)
 
     # example: output/annotated_videos/make/dunk/make4_annotated.mp4
-    OUTPUT_VIDEO = f"output/annotated_videos/{VIDEO_FILENAME}_annotated.mp4"
-
-    source = VideoFileSource(INPUT_VIDEO, realtime_processing=False)
-
-    config = StreamConfig(
-        stream_output=[],
-        data_output=["predictions"],
-        requested_plan="webrtc-gpu-medium",
-        requested_region="us",
-    )
-
-    session = client.webrtc.stream(
-        source=source,
-        workflow="pickleball-detection-vpickleball-detection-1sjz9-6-rfdetr-medium-t1-logic-2",
-        workspace="noahs-workspace-kg24g",
-        image_input="image",
-        config=config
-    )
-
-    predictions_by_frame = {}
-
-    @session.on_data()
-    def on_data(data: dict, metadata: VideoMetadata):
-        frame_id = metadata.frame_id
-
-        # Adjust this if your workflow output structure is different
-        preds = data.get("predictions", {}).get("predictions", [])
-
-        predictions_by_frame[frame_id] = preds
-        print(f"Saved predictions for frame {frame_id}: {len(preds)} detections")
-
-    session.run()
-
-    # Reopen original video
-    cap = cv2.VideoCapture(INPUT_VIDEO)
-
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-
-    tracker = sv.ByteTrack(
-        frame_rate=fps,
-        track_activation_threshold=0.25,    # min confidence required for a detection to start a new track
-        lost_track_buffer=30,               # how many consecutive frames ByteTrack will remember an object after it 
-                                            # disappears before deleting its track
-        minimum_matching_threshold=0.8,
-        minimum_consecutive_frames=2        # how many consecutive detections are required before ByteTrack reports a track
-    )
-
-    out = cv2.VideoWriter(
-        OUTPUT_VIDEO,
-        cv2.VideoWriter_fourcc(*"mp4v"),
-        fps,
-        (width, height)
-    )
-
-    frame_id = 1
-
-    tracked_predictions = {}
-    CLASS_NAMES = {
-        0: "ball",
-        1: "player"
-    }
-
-
-    while True:
-
-        ret, frame = cap.read()
-        if not ret:
-            break
-
-        preds = predictions_by_frame.get(frame_id, [])
-
-        cache = {}
-
-        xyxy = []
-        confidences = []
-        class_ids = []
-
-        for pred in preds:
-
-            class_name = pred['class']
-            conf = pred['confidence']
-            x = pred["x"]
-            y = pred["y"]
-            w = pred["width"]
-            h = pred["height"]
-
-            x1 = int(x - w / 2)
-            y1 = int(y - h / 2)
-            x2 = int(x + w / 2)
-            y2 = int(y + h / 2)
-
-            player_box = [x1, y1, x2, y2]
-            pred['box'] = [x1, y1, x2, y2]
-
-            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-
-            xyxy.append(player_box)
-            confidences.append(pred['confidence'])
-            class_ids.append(pred['class_id'])
-
-        tracked_predictions[frame_id] = []
-
-        if xyxy:
-
-            detections = sv.Detections(
-                xyxy=np.array(xyxy, dtype=np.float32),
-                confidence=np.array(confidences, dtype=np.float32),
-                class_id=np.array(class_ids, dtype=int)
-            )
-            
-        else: 
-            detections = sv.Detections.empty()
-
-        print(f"Updating tracker for frame {frame_id}. ({frame_id}/{len(predictions_by_frame)})")
-        tracked = tracker.update_with_detections(detections)
-
-        for box, confidence, class_id, tracker_id in zip(
-            tracked.xyxy,
-            tracked.confidence,
-            tracked.class_id,
-            tracked.tracker_id
-        ):
-            
-            x1, y1, x2, y2 = map(int, box)
-            curr_class = CLASS_NAMES[int(class_id)]
-
-            tracked_predictions[frame_id].append({
-                "class": curr_class,
-                "track_id": None if tracker_id is None else int(tracker_id),
-                "class_id": int(class_id),
-                "confidence": float(confidence),
-                "box": [
-                    float(x1),
-                    float(y1),
-                    float(x2),
-                    float(y2)
-                ]
-            })
-
-            curr_conf = float(confidence)
-
-            label = f"{curr_class} (tracker id: {tracker_id}) {curr_conf:.2f}"
-
-            cv2.putText(
-                frame,                      # image we're drawing on
-                label,                      # text that will be displayed
-                (x1, max(y1 - 10, 20)),     # bottom left corner of the text
-                cv2.FONT_HERSHEY_SIMPLEX,   # font
-                0.6,                        # font size
-                (0, 255, 0),                # font color
-                2                           # font thickness
-            )
-
-        out.write(frame)
-        frame_id += 1
-
-    cap.release()
-    out.release()
-
-    predictions_text_path = f"output/predictions/{VIDEO_FILENAME}_predictions.txt"
-    with open(predictions_text_path, "w") as f:
-
-        print(f"Saving Predictions by Frame to {predictions_text_path}.")
-        json.dump(predictions_by_frame, f, indent=4)
-
-    tracker_path = f"output/predictions/{VIDEO_FILENAME}_tracker.txt"
-    with open(tracker_path, "w") as f:
-
-        print(f"Saving Tracker to {tracker_path}.")
-        json.dump(tracked_predictions, f, indent=4)
-
-    print(f"Done! Annotated video saved as output/annotated_videos/{'/'.join(parts[-3:-1])}/{VIDEO_FILENAME}_with_tracker_annotated.mp4")
-
-    return len(predictions_by_frame) / fps
-
-def predict(video_path: Path, api_key: str, BALL_CONFIDENCE_THRESHOLD=0.5, PLAYER_CONFIDENCE_THRESHOLD=0.8):
-
-    client = InferenceHTTPClient.init(
-        api_url="https://serverless.roboflow.com",
-        api_key=api_key
-    )
-
-    parts = video_path.parts
-
-    VIDEO_FILENAME = parts[-1].split(".")[0]
-
-    # example: input/make/dunk/make4.mp4
-    INPUT_VIDEO = str(video_path)
-
-    # example: output/annotated_videos/make/dunk/make4_annotated.mp4
-    OUTPUT_VIDEO = f"output/annotated_videos/{VIDEO_FILENAME}_annotated.mp4"
+    output_suffix = "_with_tracker_annotated.mp4" if use_bytetrack else "_annotated.mp4"
+    OUTPUT_VIDEO = f"output/annotated_videos/{VIDEO_FILENAME}{output_suffix}"
     PREDICTIONS_FILE = f"output/predictions/{VIDEO_FILENAME}_predictions.txt"
 
     cap = cv2.VideoCapture(INPUT_VIDEO)
@@ -251,6 +73,17 @@ def predict(video_path: Path, api_key: str, BALL_CONFIDENCE_THRESHOLD=0.5, PLAYE
     fps = cap.get(cv2.CAP_PROP_FPS)
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+    player_tracker = None
+    tracked_predictions = {}
+    if use_bytetrack:
+        player_tracker = sv.ByteTrack(
+            frame_rate=fps,
+            track_activation_threshold=0.35,
+            lost_track_buffer=45,
+            minimum_matching_threshold=0.75,
+            minimum_consecutive_frames=3,
+        )
 
     if os.path.isfile(OUTPUT_VIDEO) and os.path.isfile(PREDICTIONS_FILE):
 
@@ -262,32 +95,77 @@ def predict(video_path: Path, api_key: str, BALL_CONFIDENCE_THRESHOLD=0.5, PLAYE
 
         source = VideoFileSource(INPUT_VIDEO, realtime_processing=False)
 
-        config = StreamConfig(
+        session_config = StreamConfig(
             stream_output=[],
-            data_output=["predictions"],
+            data_output=["predictions", "model_id", "court_detection_predictions"],
             requested_plan="webrtc-gpu-medium",
             requested_region="us",
         )
 
         session = client.webrtc.stream(
             source=source,
-            workflow="pickleball-detection-vpickleball-detection-1sjz9-6-rfdetr-medium-t1-logic-2",
+            workflow=f"pickleball-object-detection-model-{vision_model_id}",
             workspace="noahs-workspace-kg24g",
             image_input="image",
-            config=config
+            config=session_config
         )
 
         predictions_by_frame = {}
+        court_detection_points_by_frame = {}
+
+        model_verified = False
+        should_exit = False
 
         @session.on_data()
         def on_data(data: dict, metadata: VideoMetadata):
+            
+            nonlocal model_verified, should_exit
+
             frame_id = metadata.frame_id
 
-            # Adjust this if your workflow output structure is different
-            preds = data.get("predictions", {}).get("predictions", [])
+            if not data:
 
+                print(f"Could not find data on frame {frame_id}.")
+                os._exit(1)
+
+            # Only check the model ID once
+            if not model_verified:
+                model_id = data.get("model_id")
+                court_detection_model_id = data.get("court_detection_model_id", None)
+
+                if model_id is None:
+                    print("Could not find model ID.")
+                    should_exit = True
+                    return
+
+                user_input = input(
+                    f"We are using model {model_id}. Is this correct? (y/n): "
+                )
+
+                while user_input.lower() not in ["y", "n"]:
+                    user_input = input("Please enter y or n: ")
+
+                if user_input.lower() == "n":
+                    should_exit = True
+                    os._exit(1)
+
+                # Prevent asking again on future frames
+                model_verified = True
+
+            # Don't save predictions if we decided to exit
+            if should_exit:
+                os._exit(1)
+                return
+
+            preds = data.get("predictions", {}).get("predictions", [])
             predictions_by_frame[frame_id] = preds
-            
+
+            court_detection_data = data.get("court_detection_predictions", {})
+            if court_detection_data:
+
+                court_detection_points = court_detection_data.get('predictions', [])[0].get("keypoints", [])
+                court_detection_points_by_frame[frame_id] = court_detection_points            
+
             print(f"Saved predictions for frame {frame_id}: {len(preds)} detections")
 
         session.run()
@@ -316,12 +194,324 @@ def predict(video_path: Path, api_key: str, BALL_CONFIDENCE_THRESHOLD=0.5, PLAYE
                     f"Frame Number: {frame_id}",
                     (50, 50),
                     cv2.FONT_HERSHEY_SIMPLEX,   # font
-                    0.6,                        # font size
+                    1,                        # font size
                     (0, 255, 0),                # font color
-                    2 
+                    3 
                 )
 
-                preds = predictions_by_frame.get(frame_id, [])
+                preds = predictions_by_frame.get(frame_id)
+
+                xyxy = []
+                confidences = []
+                class_ids = []
+                player_xyxy = []
+                player_confidences = []
+                player_class_ids = []
+
+                for pred in preds:
+
+                    conf = pred['confidence']
+                    class_name = pred['class']
+
+                    if class_name == 'player' and conf < PLAYER_CONFIDENCE_THRESHOLD: continue
+
+                    x = pred["x"]
+                    y = pred["y"]
+                    w = pred["width"]
+                    h = pred["height"]
+
+                    x1 = int(x - w / 2)
+                    y1 = int(y - h / 2)
+                    x2 = int(x + w / 2)
+                    y2 = int(y + h / 2)
+
+                    player_box = [x1, y1, x2, y2]
+                    pred['box'] = [x1, y1, x2, y2]
+
+                    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+
+                    xyxy.append(player_box)
+                    confidences.append(pred['confidence'])
+                    class_ids.append(pred['class_id'])
+
+                    if class_name == "player":
+                        player_xyxy.append(player_box)
+                        player_confidences.append(pred['confidence'])
+                        player_class_ids.append(pred['class_id'])
+
+                    if class_name == "ball": label = f"{class_name} {conf:.2f} ({x}, {y})"
+                    else: label = f"{class_name} ({conf}) ({x}, {y})"
+                    
+                    cv2.putText(
+                        frame,                      # image we're drawing on
+                        label,                      # text that will be displayed
+                        (x1, max(y1 - 10, 20)),     # bottom left corner of the text
+                        cv2.FONT_HERSHEY_SIMPLEX,   # font
+                        1,                        # font size
+                        (0, 255, 0),                # font color
+                        2                           # font thickness
+                    )
+
+                if use_bytetrack:
+                    if player_xyxy:
+                        player_detections = sv.Detections(
+                            xyxy=np.asarray(player_xyxy, dtype=np.float32),
+                            confidence=np.asarray(player_confidences, dtype=np.float32),
+                            class_id=np.asarray(player_class_ids, dtype=int),
+                        )
+                    else:
+                        player_detections = sv.Detections.empty()
+
+                    tracked = player_tracker.update_with_detections(player_detections)
+                    tracked_predictions[frame_id] = []
+
+                    for box, confidence, class_id, tracker_id in zip(
+                        tracked.xyxy,
+                        tracked.confidence,
+                        tracked.class_id,
+                        tracked.tracker_id,
+                    ):
+                        x1, y1, x2, y2 = map(int, box)
+                        track_id = None if tracker_id is None else int(tracker_id)
+                        tracked_predictions[frame_id].append({
+                            "class": "player",
+                            "track_id": track_id,
+                            "class_id": int(class_id),
+                            "confidence": float(confidence),
+                            "box": [x1, y1, x2, y2],
+                        })
+
+                        cv2.putText(
+                            frame,
+                            f"player tracker id: {track_id}",
+                            (x1, min(y2 + 25, height - 10)),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.7,
+                            (255, 0, 255),
+                            2,
+                        )
+
+                out.write(frame)
+                frame_id += 1
+                pbar.update(1)
+
+        predictions_text_path = f"output/predictions/{VIDEO_FILENAME}_predictions.txt"
+        with open(predictions_text_path, "w") as f:
+
+            print(f"Saving Predictions by Frame to {predictions_text_path}.")
+            json.dump(predictions_by_frame, f, indent=4)
+
+        court_points_path = f"output/court_points/{VIDEO_FILENAME}_court_points_from_model.json"
+        with open(court_points_path, "w") as f:
+
+            print(f"Saving court points to {court_points_path}")
+            json.dump(court_detection_points_by_frame, f, indent=4)
+
+        if use_bytetrack:
+            tracker_path = f"output/predictions/{VIDEO_FILENAME}_tracker.json"
+            with open(tracker_path, "w") as f:
+                print(f"Saving player tracker data to {tracker_path}.")
+                json.dump(tracked_predictions, f, indent=4)
+
+        cap.release()
+        out.release()
+
+        print(f"Annotated video saved as output/annotated_videos/{'/'.join(parts[-3:-1])}/{VIDEO_FILENAME}_annotated.mp4")
+
+    COURT_POINTS_FILE = os.path.join('output', "court_points", f"{VIDEO_FILENAME}_court_points.json")
+    if not os.path.isfile(COURT_POINTS_FILE):
+
+        get_court_points(VIDEO_PATH=INPUT_VIDEO, OUTPUT_PATH=COURT_POINTS_FILE)
+
+    BALL_TRACKER_CLASS_FILE = os.path.join("output", "BallTracking", f"{VIDEO_FILENAME}", f"{VIDEO_FILENAME}_ball_tracking_class.pkl")
+    BALL_TRACKER_FILE = os.path.join("output", "BallTracking", f"{VIDEO_FILENAME}", f"{VIDEO_FILENAME}_ball_tracking.json")
+
+    if user_input == "y":
+
+        predictions_text_path = f"output/predictions/{VIDEO_FILENAME}_predictions.txt"
+        H = compute_homography(COURT_POINTS_PATH=COURT_POINTS_FILE)
+        ball_tracker = run_predictions(COURT_POINTS_INPUT_FILE=COURT_POINTS_FILE, PREDICTIONS_INPUT_FILE=predictions_text_path, BALL_TRACKING_OUTPUT_FILE=BALL_TRACKER_FILE, ball_tracker=BallTracker(homography_matrix=H))
+
+        with open(BALL_TRACKER_CLASS_FILE, "wb") as f:
+
+            print(f"Saved BallTracker class to {BALL_TRACKER_CLASS_FILE}")
+            pickle.dump(ball_tracker, f)
+
+        with open(BALL_TRACKER_FILE, "w") as f:
+
+            print(f"Saved ball tracker stats to {BALL_TRACKER_FILE}")
+            json.dump(ball_tracker.tracker, f, indent=4)
+
+    else:
+
+        with open(BALL_TRACKER_CLASS_FILE, "rb") as f:
+
+            ball_tracker = pickle.load(f)
+
+    # seconds recorded
+    return len(ball_tracker.tracker) / fps
+
+def predict(
+        video_path: Path, 
+        api_key: str,
+        sport: str,
+        vision_model_id: int,
+        DEBUG_PATH: Path = None,
+        BOUNCE_DEBUG_PATH: Path = None,
+        PLAYER_CONFIDENCE_THRESHOLD: float = 0.8,
+        debug: bool = False,
+    ):
+
+    client = InferenceHTTPClient.init(
+        api_url="https://serverless.roboflow.com",
+        api_key=api_key
+    )
+
+    should_exit = -1
+
+    parts = video_path.parts
+
+    VIDEO_FILENAME = parts[-1].split(".")[0].split("_")[0]
+
+    # example: input/make/dunk/make4.mp4
+    INPUT_VIDEO = str(video_path)
+
+    # example: output/annotated_videos/make/dunk/make4_annotated.mp4
+    OUTPUT_VIDEO = f"output/annotated_videos/{VIDEO_FILENAME}_annotated.mp4"
+    PREDICTIONS_FILE = f"output/predictions/{VIDEO_FILENAME}_predictions.txt"
+
+    cap = cv2.VideoCapture(INPUT_VIDEO)
+    
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+    if os.path.isfile(OUTPUT_VIDEO) and os.path.isfile(PREDICTIONS_FILE) and debug:
+
+        user_input = input("Already have an annotated video and a predictions file. Do you want to run the program again? (y/n) ")
+        while user_input.lower() not in {"y", "n"}:
+            user_input = input("Answer 'y' or 'n': ")
+
+    else: user_input = "y"
+
+    if user_input.lower() == "y":
+
+        source = VideoFileSource(INPUT_VIDEO, realtime_processing=False)
+
+        session_config = StreamConfig(
+            stream_output=[],
+            data_output=["predictions", "model_id", "court_detection_predictions"],
+            requested_plan="webrtc-gpu-medium",
+            requested_region="us",
+        )
+
+        session = client.webrtc.stream(
+            source=source,
+            workflow=f"{sport}-object-detection-model-{vision_model_id}",
+            workspace="noahs-workspace-kg24g",
+            image_input="image",
+            config=session_config
+        )
+
+        predictions_by_frame = {}
+        court_detection_points_by_frame = {}
+
+        model_verified = False
+        should_exit = False
+
+        @session.on_data()
+        def on_data(data: dict, metadata: VideoMetadata):
+            
+            nonlocal model_verified, should_exit
+
+            frame_id = metadata.frame_id
+
+            if not data:
+
+                print(f"Could not find data on frame {frame_id}.")
+                os._exit(1)
+
+            # Only check the model ID once
+            if not model_verified and debug:
+                model_id = data.get("model_id")
+                court_detection_model_id = data.get("court_detection_model_id", None)
+
+                if model_id is None:
+                    print("Could not find model ID.")
+                    should_exit = True
+                    return
+
+                user_input = input(
+                    f"We are using model {model_id}. Is this correct? (y/n): "
+                )
+
+                while user_input.lower() not in ["y", "n"]:
+                    user_input = input("Please enter y or n: ")
+
+                if user_input.lower() == "n":
+                    should_exit = True
+                    os._exit(1)
+
+                # Prevent asking again on future frames
+                model_verified = True
+
+            # Don't save predictions if we decided to exit
+            if should_exit:
+                os._exit(1)
+                return
+
+            preds = data.get("predictions", {}).get("predictions", [])
+            predictions_by_frame[frame_id] = preds
+
+            court_detection_data = data.get("court_detection_predictions", {})
+            if court_detection_data:
+
+                if court_detection_data.get("predictions", []):
+
+                    court_detection_points = court_detection_data.get('predictions', [])[0].get("keypoints", [])
+                    court_detection_points_by_frame[frame_id] = court_detection_points            
+
+            pbar.update(1)
+            # print(f"Saved predictions for frame {frame_id}: {len(preds)} detections")
+        total_frames = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+
+        with tqdm(total=total_frames, desc=f"Saving predictions: ") as pbar:
+
+            session.run()
+
+        out = cv2.VideoWriter(
+            OUTPUT_VIDEO,
+            cv2.VideoWriter_fourcc(*"mp4v"),
+            fps,
+            (width, height)
+        )
+
+        frame_id = 1
+
+        with tqdm(total=total_frames, desc="Processing frames") as pbar:
+
+            while True:
+
+                ret, frame = cap.read()
+                if not ret:
+                    break
+
+                cv2.putText(
+                    frame,
+                    f"Frame Number: {frame_id}",
+                    (50, 50),
+                    cv2.FONT_HERSHEY_SIMPLEX,   # font
+                    1,                        # font size
+                    (0, 255, 0),                # font color
+                    3 
+                )
+
+                preds = predictions_by_frame.get(frame_id)
+
+                if not preds:
+
+                    print(f"Frame {frame_id} does not have any predictions.")
+                    os._exit(1)
 
                 xyxy = []
                 confidences = []
@@ -330,9 +520,6 @@ def predict(video_path: Path, api_key: str, BALL_CONFIDENCE_THRESHOLD=0.5, PLAYE
                 for pred in preds:
 
                     conf = pred['confidence']
-
-                    # if conf < CONFIDENCE_THRESHOLD: continue
-
                     class_name = pred['class']
 
                     if class_name == 'player' and conf < PLAYER_CONFIDENCE_THRESHOLD: continue
@@ -364,7 +551,7 @@ def predict(video_path: Path, api_key: str, BALL_CONFIDENCE_THRESHOLD=0.5, PLAYE
                         label,                      # text that will be displayed
                         (x1, max(y1 - 10, 20)),     # bottom left corner of the text
                         cv2.FONT_HERSHEY_SIMPLEX,   # font
-                        0.6,                        # font size
+                        1,                        # font size
                         (0, 255, 0),                # font color
                         2                           # font thickness
                     )
@@ -379,24 +566,58 @@ def predict(video_path: Path, api_key: str, BALL_CONFIDENCE_THRESHOLD=0.5, PLAYE
             print(f"Saving Predictions by Frame to {predictions_text_path}.")
             json.dump(predictions_by_frame, f, indent=4)
 
+        court_points_path = f"output/court_points/{VIDEO_FILENAME}_court_points_from_model.json"
+        with open(court_points_path, "w") as f:
+
+            print(f"Saving court points to {court_points_path}")
+            json.dump(court_detection_points_by_frame, f, indent=4)
+
         cap.release()
         out.release()
 
         print(f"Annotated video saved as output/annotated_videos/{'/'.join(parts[-3:-1])}/{VIDEO_FILENAME}_annotated.mp4")
 
-    COURT_POINTS_FILE = os.path.join('output', "court_points", f"{VIDEO_FILENAME}_court_points.json")
-    if not os.path.isfile(COURT_POINTS_FILE):
+    if sport == "pickleball":
 
-        get_court_points(VIDEO_PATH=INPUT_VIDEO, OUTPUT_PATH=COURT_POINTS_FILE)
+        COURT_POINTS_FILE = os.path.join('output', "court_points", f"{VIDEO_FILENAME}_court_points.json")
+        if not os.path.isfile(COURT_POINTS_FILE):
 
-    BALL_TRACKER_CLASS_FILE = os.path.join("output", "BallTracking", f"{VIDEO_FILENAME}_ball_tracking_class.pkl")
-    BALL_TRACKER_FILE = os.path.join("output", "BallTracking", f"{VIDEO_FILENAME}_ball_tracking.json")
+            get_court_points(VIDEO_PATH=INPUT_VIDEO, OUTPUT_PATH=COURT_POINTS_FILE, sport=sport)
+
+    elif sport == "tennis":
+
+        COURT_POINTS_FILE = os.path.join('output', "court_points", f"{VIDEO_FILENAME}_court_points_from_model.json")
+
+    BALL_TRACKER_CLASS_FILE = os.path.join("output", "BallTracking", VIDEO_FILENAME, f"{VIDEO_FILENAME}_ball_tracking_class.pkl")
+    BALL_TRACKER_FILE = os.path.join("output", "BallTracking", VIDEO_FILENAME, f"{VIDEO_FILENAME}_ball_tracking.json")
 
     if user_input == "y":
 
         predictions_text_path = f"output/predictions/{VIDEO_FILENAME}_predictions.txt"
-        H = compute_homography(COURT_POINTS_PATH=COURT_POINTS_FILE)
-        ball_tracker = run_predictions(COURT_POINTS_INPUT_FILE=COURT_POINTS_FILE, PREDICTIONS_INPUT_FILE=predictions_text_path, BALL_TRACKING_OUTPUT_FILE=BALL_TRACKER_FILE, ball_tracker=BallTracker(homography_matrix=H))
+        H = compute_homography(COURT_POINTS_PATH=COURT_POINTS_FILE, SPORT=sport)
+        if debug:
+            
+            tn, fn, fp, ball_tracker = run_predictions(
+                        COURT_POINTS_INPUT_FILE=COURT_POINTS_FILE, 
+                        PREDICTIONS_INPUT_FILE=predictions_text_path, 
+                        BALL_TRACKING_OUTPUT_FILE=BALL_TRACKER_FILE, 
+                        ball_tracker=BallTracker(homography_matrix=H),
+                        DEBUG_PATH=DEBUG_PATH,
+                        BOUNCE_DEBUG_PATH=BOUNCE_DEBUG_PATH,
+                        debug=debug
+                    )
+        else:
+
+            ball_tracker = run_predictions(
+                COURT_POINTS_INPUT_FILE=COURT_POINTS_FILE, 
+                PREDICTIONS_INPUT_FILE=predictions_text_path, 
+                BALL_TRACKING_OUTPUT_FILE=BALL_TRACKER_FILE, 
+                ball_tracker=BallTracker(homography_matrix=H),
+                DEBUG_PATH=DEBUG_PATH,
+                BOUNCE_DEBUG_PATH=BOUNCE_DEBUG_PATH,
+                debug=debug
+            )
+
 
         with open(BALL_TRACKER_CLASS_FILE, "wb") as f:
 
@@ -417,34 +638,94 @@ def predict(video_path: Path, api_key: str, BALL_CONFIDENCE_THRESHOLD=0.5, PLAYE
     # seconds recorded
     return len(ball_tracker.tracker) / fps
 
+def validate_video(
+    INPUT_PATH: Path,
+    VIDEO_FILENAME: str,
+    mean_diff_threshold: float = 0.1
+):
+
+    VIDEO_PATH = os.path.join(INPUT_PATH, f"{VIDEO_FILENAME}.mp4")
+
+    cap = cv2.VideoCapture(VIDEO_PATH)
+    total_frames = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+    previous_frame = None
+    repeat_frames = 0
+
+    with tqdm(total=total_frames, desc=f"Validating Video: ") as pbar:
+
+        while True:
+
+            ret, frame = cap.read()
+            if not ret:
+                break
+
+            if previous_frame is not None:
+
+                diff = cv2.absdiff(previous_frame, frame)
+                diff_mean = np.mean(diff)
+
+                if diff_mean < mean_diff_threshold:
+                    repeat_frames += 1
+
+    cap.release()
+    
+    if repeat_frames > 0.25 * total_frames:
+
+        print(f"Video is not valid for uploading. Try Again.")
+        return 1
+    
+    return 0
+            
 if __name__ == "__main__":
 
-    video_filename = "21"
+    video_filename = "tennis3"
+    sport="tennis"
+    vision_model_id = 12
+    debug=False
 
     API_KEY = os.getenv("API_KEY")
-    VIDEO_FILE = Path(os.path.join("input", f"{video_filename}.mp4"))
-    BALL_TRACKING_CLASS_FILE = os.path.join("output", "BallTracking", f"{video_filename}_ball_tracking_class.pkl")
-    COURT_POINTS_FILE = os.path.join("output", "court_points", f"{video_filename}_court_points.json")
+    INPUT_PATH = Path('input')
+
+    VIDEO_PATH = Path(os.path.join("input", f"{video_filename}.mp4"))
+    BALL_TRACKING_DIRECTORY = os.path.join("output", "BallTracking", f"{video_filename}")
+    BALL_TRACKING_CLASS_FILE = os.path.join("output", "BallTracking", f"{video_filename}", f"{video_filename}_ball_tracking_class.pkl")
+    if sport == "pickleball":
+        COURT_POINTS_FILE = os.path.join("output", "court_points", f"{video_filename}_court_points.json")
+    elif sport == "tennis":
+        COURT_POINTS_FILE = ("output", "court_points", f"{video_filename}_court_points_from_model.json")
     PREDICTIONS_FILE = os.path.join("output", "predictions", f"{video_filename}_predictions.txt")
-    ACTUAL_BOUNCES_FILE = os.path.join("output", "BallTracking", f"{video_filename}_actual_bounces.txt")
+    ACTUAL_BOUNCES_FILE = os.path.join("output", "BallTracking", f"{video_filename}", f"{video_filename}_actual_bounces.txt")
+    DEBUG_PATH = os.path.join("output", "BallTracking", f"{video_filename}", f"{video_filename}_debug.txt")
+    BOUNCE_DEBUG_PATH = os.path.join("output", "BallTracking", f"{video_filename}", f"{video_filename}_bouncing_debugging.txt")
 
-    # start = time.time()
-    # seconds = predict(video_path=VIDEO_FILE, api_key=API_KEY)
-    # end = time.time()
+    if not os.path.isdir(BALL_TRACKING_DIRECTORY):
 
-    # print(f"For a {seconds:.2f} second video the script took {end - start:.2f} seconds to run.")
+        os.mkdir(BALL_TRACKING_DIRECTORY)
 
-    with open(BALL_TRACKING_CLASS_FILE, "rb") as f:
+    with open(DEBUG_PATH, "w") as f:
+        pass
 
-        ball_tracker = pickle.load(f)
+    if not os.path.isfile(VIDEO_PATH):
 
-    if os.path.isfile(ACTUAL_BOUNCES_FILE):
+        status_code = validate_video(INPUT_PATH=INPUT_PATH, VIDEO_FILENAME=video_filename)
+        if status_code != 0: 
 
-        find_angles(ball_tracker_class=ball_tracker, actual_bounces_path=ACTUAL_BOUNCES_FILE, testing=False)
+            print(f"Video file is corrupted.")
+            os._exit(1)
 
-    else:
+    start = time.time()
+    seconds = predict(
+        video_path=VIDEO_PATH, 
+        api_key=API_KEY, 
+        vision_model_id=vision_model_id, 
+        DEBUG_PATH=DEBUG_PATH, 
+        BOUNCE_DEBUG_PATH=BOUNCE_DEBUG_PATH, 
+        debug=debug,
+        sport=sport
+    )
+    end = time.time()
 
-        find_angles(ball_tracker_class=ball_tracker)
+    print(f"For a {seconds:.2f} second video the script took {end - start:.2f} seconds to run.")
 
     
 

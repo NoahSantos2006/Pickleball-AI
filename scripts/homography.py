@@ -10,7 +10,7 @@ import pickle
 BASE_DIR = Path(__file__).parent.parent
 
 from scripts.ball_tracker import BallTracker
-from scripts.side_functions import get_coordinates_and_center, validate_bounce
+from scripts.side_functions import get_coordinates_and_center, validate_bounce, ball_near_player, plot_ball_trajectory
 
 """
 PICKLEBALL COURT MEASUREMENTS
@@ -113,23 +113,53 @@ THINGS THAT I COULD IMPLEMENT
     - might implement avoiding detections that were in the same homographical spot for multiple frames meaning a false positive
 """
 
-COURT_HEIGHT = 44
-COURT_WIDTH = 20
+PICKLEBALL_COURT_HEIGHT = 44
+PICKLEBALL_COURT_HEIGHT = 20
+PICKLEBALL_COURT_SCALE = 20
+PICKLEBALL_COURT_PADDING = 50
 
-SCALE = 20
-PADDING = 50
+TENNIS_COURT_LENGTH = 23.77
+TENNIS_COURT_WIDTH = 10.97
+TENNIS_COURT_SCALE = 25
+TENNIS_COURT_PADDING = 30
 
-def compute_homography(video_points: np.array, top_down_points = np.array([
-                                                                [PADDING, PADDING + 44 * SCALE],                # near left baseline    ( 50 , 930 ) 
-                                                                [PADDING + 20 * SCALE, PADDING + 44 * SCALE],   # near right baseline   ( 450, 930 )
-                                                                [PADDING + 20 * SCALE, PADDING],                # far right baseline    ( 450, 50  )
-                                                                [PADDING, PADDING],                             # far left baseline     ( 50 , 50  )
-                                                                [PADDING, PADDING + 29 * SCALE],                # near left kitchen     ( 50 , 630 )
-                                                                [PADDING + 20 * SCALE, PADDING + 29 * SCALE],   # near right kitchen    ( 450, 630 )
-                                                                [PADDING, PADDING + 15 * SCALE],                # far right kitchen     ( 50 , 350 ) 
-                                                                [PADDING + 20 * SCALE, PADDING + 15 * SCALE]],  # far left kitchen      ( 450, 350 )
-                                                                dtype=np.float32)
-) -> np.array:
+
+
+
+def compute_homography(video_points: np.array, sport: str) -> np.array:
+
+    if sport == "pickleball":
+
+        top_down_points = np.array([
+            [PICKLEBALL_COURT_PADDING, PICKLEBALL_COURT_PADDING + 44 * PICKLEBALL_COURT_SCALE],                # near left baseline    ( 50 , 930 ) 
+            [PICKLEBALL_COURT_PADDING + 20 * PICKLEBALL_COURT_SCALE, PICKLEBALL_COURT_PADDING + 44 * PICKLEBALL_COURT_SCALE],   # near right baseline   ( 450, 930 )
+            [PICKLEBALL_COURT_PADDING + 20 * PICKLEBALL_COURT_SCALE, PICKLEBALL_COURT_PADDING],                # far right baseline    ( 450, 50  )
+            [PICKLEBALL_COURT_PADDING, PICKLEBALL_COURT_PADDING],                             # far left baseline     ( 50 , 50  )
+            [PICKLEBALL_COURT_PADDING, PICKLEBALL_COURT_PADDING + 29 * PICKLEBALL_COURT_SCALE],                # near left kitchen     ( 50 , 630 )
+            [PICKLEBALL_COURT_PADDING + 20 * PICKLEBALL_COURT_SCALE, PICKLEBALL_COURT_PADDING + 29 * PICKLEBALL_COURT_SCALE],   # near right kitchen    ( 450, 630 )
+            [PICKLEBALL_COURT_PADDING, PICKLEBALL_COURT_PADDING + 15 * PICKLEBALL_COURT_SCALE],                # far right kitchen     ( 50 , 350 ) 
+            [PICKLEBALL_COURT_PADDING + 20 * PICKLEBALL_COURT_SCALE, PICKLEBALL_COURT_PADDING + 15 * PICKLEBALL_COURT_SCALE]],  # far left kitchen      ( 450, 350 )
+            dtype=np.float32
+        )
+    elif sport == "tennis":
+
+        top_down_points = np.array([
+            [TENNIS_COURT_PADDING, TENNIS_COURT_PADDING + 23.77 * TENNIS_COURT_SCALE],                              # 1 - near left doubles baseline
+            [TENNIS_COURT_PADDING + 1.37 * TENNIS_COURT_SCALE, TENNIS_COURT_PADDING + 23.77 * TENNIS_COURT_SCALE],  # 2 - near left singles baseline
+            [TENNIS_COURT_PADDING + 9.60 * TENNIS_COURT_SCALE, TENNIS_COURT_PADDING + 23.77 * TENNIS_COURT_SCALE],  # 3 - near right singles baseline
+            [TENNIS_COURT_PADDING + 10.97 * TENNIS_COURT_SCALE, TENNIS_COURT_PADDING + 23.77 * TENNIS_COURT_SCALE], # 4 - near right doubles baseline
+            [TENNIS_COURT_PADDING + 10.97 * TENNIS_COURT_SCALE, TENNIS_COURT_PADDING],                              # 5 - far right doubles baseline
+            [TENNIS_COURT_PADDING + 9.60 * TENNIS_COURT_SCALE, TENNIS_COURT_PADDING],                               # 6 - far right singles baseline
+            [TENNIS_COURT_PADDING + 1.37 * TENNIS_COURT_SCALE, TENNIS_COURT_PADDING],                               # 7 - far left singles baseline
+            [TENNIS_COURT_PADDING, TENNIS_COURT_PADDING],                                                           # 8 - far left doubles baseline
+            [TENNIS_COURT_PADDING + 1.37 * TENNIS_COURT_SCALE, TENNIS_COURT_PADDING + 18.285 * TENNIS_COURT_SCALE], # 9 - near left service line
+            [TENNIS_COURT_PADDING + 1.37 * TENNIS_COURT_SCALE, TENNIS_COURT_PADDING + 5.485 * TENNIS_COURT_SCALE],  # 10 - far left service line
+            [TENNIS_COURT_PADDING + 9.60 * TENNIS_COURT_SCALE, TENNIS_COURT_PADDING + 18.285 * TENNIS_COURT_SCALE], # 11 - near right service line
+            [TENNIS_COURT_PADDING + 9.60 * TENNIS_COURT_SCALE, TENNIS_COURT_PADDING + 5.485 * TENNIS_COURT_SCALE],  # 12 - far right service line
+            [TENNIS_COURT_PADDING + 5.485 * TENNIS_COURT_SCALE, TENNIS_COURT_PADDING + 18.285 * TENNIS_COURT_SCALE],# 13 - near centre service line
+            [TENNIS_COURT_PADDING + 5.485 * TENNIS_COURT_SCALE, TENNIS_COURT_PADDING + 5.485 * TENNIS_COURT_SCALE]],# 14 - far centre service line
+            dtype=np.float32
+        )
     
     H, mask = cv2.findHomography(
         video_points,
@@ -164,11 +194,11 @@ def detection_of_court_points(box: tuple, H: np.array) -> tuple:
 
 def draw_pickleball_court() -> np.array:
 
-    OUTPUT_WIDTH = int(COURT_WIDTH * SCALE)
-    OUTPUT_HEIGHT = int(COURT_HEIGHT * SCALE)
+    OUTPUT_WIDTH = int(PICKLEBALL_COURT_HEIGHT * PICKLEBALL_COURT_SCALE)
+    OUTPUT_HEIGHT = int(PICKLEBALL_COURT_HEIGHT * PICKLEBALL_COURT_SCALE)
 
     # 1. Create a black canvas (500x500 pixels, 3 color channels)
-    image = np.full((OUTPUT_HEIGHT + int(PADDING*2), OUTPUT_WIDTH + int(PADDING*2), 3), (60, 110, 60), dtype="uint8")
+    image = np.full((OUTPUT_HEIGHT + int(PICKLEBALL_COURT_PADDING*2), OUTPUT_WIDTH + int(PICKLEBALL_COURT_PADDING*2), 3), (60, 110, 60), dtype="uint8")
     
     """
     Top size
@@ -177,8 +207,8 @@ def draw_pickleball_court() -> np.array:
     # Far Side
     cv2.rectangle(
         image,
-        (PADDING, PADDING + 15 * SCALE),                     
-        (PADDING + 20 * SCALE, PADDING),                        
+        (PICKLEBALL_COURT_PADDING, PICKLEBALL_COURT_PADDING + 15 * PICKLEBALL_COURT_SCALE),                     
+        (PICKLEBALL_COURT_PADDING + 20 * PICKLEBALL_COURT_SCALE, PICKLEBALL_COURT_PADDING),                        
         (235, 160, 85),
         -1                                  # Thickness (positive number --> outline only; -1 --> fill entire rectangle)
     )
@@ -187,8 +217,8 @@ def draw_pickleball_court() -> np.array:
     # Kitchen
     cv2.rectangle(
         image,
-        (PADDING, PADDING + 29 * SCALE),
-        (PADDING + 20 * SCALE, PADDING + 15 * SCALE),
+        (PICKLEBALL_COURT_PADDING, PICKLEBALL_COURT_PADDING + 29 * PICKLEBALL_COURT_SCALE),
+        (PICKLEBALL_COURT_PADDING + 20 * PICKLEBALL_COURT_SCALE, PICKLEBALL_COURT_PADDING + 15 * PICKLEBALL_COURT_SCALE),
         (150, 60, 38),
         -1
     )
@@ -196,8 +226,8 @@ def draw_pickleball_court() -> np.array:
     # Near Side
     cv2.rectangle(
         image,
-        (PADDING, PADDING + 44 * SCALE),
-        (PADDING + 20 * SCALE, PADDING + 29 * SCALE),
+        (PICKLEBALL_COURT_PADDING, PICKLEBALL_COURT_PADDING + 44 * PICKLEBALL_COURT_SCALE),
+        (PICKLEBALL_COURT_PADDING + 20 * PICKLEBALL_COURT_SCALE, PICKLEBALL_COURT_PADDING + 29 * PICKLEBALL_COURT_SCALE),
         (235, 160, 85),
         -1
     )
@@ -205,8 +235,8 @@ def draw_pickleball_court() -> np.array:
     # Net
     cv2.line(
         image,
-        (PADDING, PADDING + 22 * SCALE),
-        (PADDING + 20 * SCALE, PADDING + 22 * SCALE),
+        (PICKLEBALL_COURT_PADDING, PICKLEBALL_COURT_PADDING + 22 * PICKLEBALL_COURT_SCALE),
+        (PICKLEBALL_COURT_PADDING + 20 * PICKLEBALL_COURT_SCALE, PICKLEBALL_COURT_PADDING + 22 * PICKLEBALL_COURT_SCALE),
         (0, 0, 0),
         3
     )
@@ -214,8 +244,8 @@ def draw_pickleball_court() -> np.array:
     # Far Kitchen Line
     cv2.line(
         image,
-        (PADDING, PADDING + 15 * SCALE),
-        (PADDING + 20 * SCALE, PADDING + 15 * SCALE),
+        (PICKLEBALL_COURT_PADDING, PICKLEBALL_COURT_PADDING + 15 * PICKLEBALL_COURT_SCALE),
+        (PICKLEBALL_COURT_PADDING + 20 * PICKLEBALL_COURT_SCALE, PICKLEBALL_COURT_PADDING + 15 * PICKLEBALL_COURT_SCALE),
         (255, 255, 255),
         3
     )
@@ -223,8 +253,8 @@ def draw_pickleball_court() -> np.array:
     # Near Kitchen Line
     cv2.line(
         image,
-        (PADDING, PADDING + 29 * SCALE),
-        (PADDING + 20 * SCALE, PADDING + 29 * SCALE),
+        (PICKLEBALL_COURT_PADDING, PICKLEBALL_COURT_PADDING + 29 * PICKLEBALL_COURT_SCALE),
+        (PICKLEBALL_COURT_PADDING + 20 * PICKLEBALL_COURT_SCALE, PICKLEBALL_COURT_PADDING + 29 * PICKLEBALL_COURT_SCALE),
         (255, 255, 255),
         3
     )
@@ -232,8 +262,8 @@ def draw_pickleball_court() -> np.array:
     # Top Baseline
     cv2.line(
         image,
-        (PADDING, PADDING),
-        (PADDING + 20 * SCALE, PADDING),
+        (PICKLEBALL_COURT_PADDING, PICKLEBALL_COURT_PADDING),
+        (PICKLEBALL_COURT_PADDING + 20 * PICKLEBALL_COURT_SCALE, PICKLEBALL_COURT_PADDING),
         (255, 255, 255),
         3 
     )
@@ -241,8 +271,8 @@ def draw_pickleball_court() -> np.array:
     # Left SideLine
     cv2.line(
         image,
-        (PADDING, PADDING),
-        (PADDING, PADDING + 44 * SCALE),
+        (PICKLEBALL_COURT_PADDING, PICKLEBALL_COURT_PADDING),
+        (PICKLEBALL_COURT_PADDING, PICKLEBALL_COURT_PADDING + 44 * PICKLEBALL_COURT_SCALE),
         (255, 255, 255),
         3
     )
@@ -250,8 +280,8 @@ def draw_pickleball_court() -> np.array:
     # Top Side Line Seperator
     cv2.line(
         image,
-        (PADDING + 10 * SCALE, PADDING + 15 * SCALE),
-        (PADDING + 10 * SCALE, PADDING),
+        (PICKLEBALL_COURT_PADDING + 10 * PICKLEBALL_COURT_SCALE, PICKLEBALL_COURT_PADDING + 15 * PICKLEBALL_COURT_SCALE),
+        (PICKLEBALL_COURT_PADDING + 10 * PICKLEBALL_COURT_SCALE, PICKLEBALL_COURT_PADDING),
         (255, 255, 255),
         3
     )
@@ -259,8 +289,8 @@ def draw_pickleball_court() -> np.array:
     # Bottom Baseline
     cv2.line(
         image,
-        (PADDING, PADDING + 44 * SCALE),
-        (PADDING + 20 * SCALE, PADDING + 44 * SCALE),
+        (PICKLEBALL_COURT_PADDING, PICKLEBALL_COURT_PADDING + 44 * PICKLEBALL_COURT_SCALE),
+        (PICKLEBALL_COURT_PADDING + 20 * PICKLEBALL_COURT_SCALE, PICKLEBALL_COURT_PADDING + 44 * PICKLEBALL_COURT_SCALE),
         (255, 255, 255),
         3
     )
@@ -268,8 +298,8 @@ def draw_pickleball_court() -> np.array:
     # Right Sideline
     cv2.line(
         image,
-        (PADDING + 20 * SCALE, PADDING),
-        (PADDING + 20 * SCALE, PADDING + 44 * SCALE),
+        (PICKLEBALL_COURT_PADDING + 20 * PICKLEBALL_COURT_SCALE, PICKLEBALL_COURT_PADDING),
+        (PICKLEBALL_COURT_PADDING + 20 * PICKLEBALL_COURT_SCALE, PICKLEBALL_COURT_PADDING + 44 * PICKLEBALL_COURT_SCALE),
         (255, 255, 255),
         3
     )
@@ -277,14 +307,218 @@ def draw_pickleball_court() -> np.array:
     # Near Side Line Seperator
     cv2.line(
         image,
-        (PADDING + 10 * SCALE, PADDING + 44 * SCALE),
-        (PADDING + 10 * SCALE, PADDING + 29 * SCALE),
+        (PICKLEBALL_COURT_PADDING + 10 * PICKLEBALL_COURT_SCALE, PICKLEBALL_COURT_PADDING + 44 * PICKLEBALL_COURT_SCALE),
+        (PICKLEBALL_COURT_PADDING + 10 * PICKLEBALL_COURT_SCALE, PICKLEBALL_COURT_PADDING + 29 * PICKLEBALL_COURT_SCALE),
         (255, 255, 255),
         3
     )
 
     return image
-          
+
+def draw_tennis_court() -> np.array:
+
+    # Tennis court dimensions in metres
+    COURT_LENGTH = 23.77
+    COURT_WIDTH = 10.97
+
+    DOUBLES_ALLEY = 1.37
+    SERVICE_LINE_FROM_NET = 6.40
+
+    HALF_LENGTH = COURT_LENGTH / 2
+    HALF_WIDTH = COURT_WIDTH / 2
+
+    # Drawing settings
+    SCALE = 25
+    PADDING = 30
+
+    # Vertical orientation:
+    # width = court width
+    # height = court length
+    OUTPUT_WIDTH = int(COURT_WIDTH * SCALE)
+    OUTPUT_HEIGHT = int(COURT_LENGTH * SCALE)
+
+    image = np.full(
+        (
+            OUTPUT_HEIGHT + PADDING * 2,
+            OUTPUT_WIDTH + PADDING * 2,
+            3
+        ),
+        (60, 110, 60),
+        dtype="uint8"
+    )
+
+    # Convert court coordinates in metres to pixels
+    # x = court width
+    # y = court length
+    def point(x, y):
+        return (
+            int(PADDING + x * SCALE),
+            int(PADDING + y * SCALE)
+        )
+
+    WHITE = (255, 255, 255)
+    COURT_COLOR = (80, 150, 80)
+    SERVICE_COLOR = (70, 140, 70)
+
+    # -----------------------------------
+    # Court background
+    # -----------------------------------
+    cv2.rectangle(
+        image,
+        point(0, 0),
+        point(COURT_WIDTH, COURT_LENGTH),
+        COURT_COLOR,
+        -1
+    )
+
+    # -----------------------------------
+    # Important Y positions
+    # -----------------------------------
+    top_service_y = HALF_LENGTH - SERVICE_LINE_FROM_NET
+    bottom_service_y = HALF_LENGTH + SERVICE_LINE_FROM_NET
+
+    # -----------------------------------
+    # Service box area
+    # -----------------------------------
+    cv2.rectangle(
+        image,
+        point(DOUBLES_ALLEY, top_service_y),
+        point(COURT_WIDTH - DOUBLES_ALLEY, bottom_service_y),
+        SERVICE_COLOR,
+        -1
+    )
+
+    # -----------------------------------
+    # Outer doubles lines
+    # -----------------------------------
+
+    # Top baseline
+    cv2.line(
+        image,
+        point(0, 0),
+        point(COURT_WIDTH, 0),
+        WHITE,
+        3
+    )
+
+    # Bottom baseline
+    cv2.line(
+        image,
+        point(0, COURT_LENGTH),
+        point(COURT_WIDTH, COURT_LENGTH),
+        WHITE,
+        3
+    )
+
+    # Left doubles sideline
+    cv2.line(
+        image,
+        point(0, 0),
+        point(0, COURT_LENGTH),
+        WHITE,
+        3
+    )
+
+    # Right doubles sideline
+    cv2.line(
+        image,
+        point(COURT_WIDTH, 0),
+        point(COURT_WIDTH, COURT_LENGTH),
+        WHITE,
+        3
+    )
+
+    # -----------------------------------
+    # Singles sidelines
+    # -----------------------------------
+
+    # Left singles sideline
+    cv2.line(
+        image,
+        point(DOUBLES_ALLEY, 0),
+        point(DOUBLES_ALLEY, COURT_LENGTH),
+        WHITE,
+        3
+    )
+
+    # Right singles sideline
+    cv2.line(
+        image,
+        point(COURT_WIDTH - DOUBLES_ALLEY, 0),
+        point(COURT_WIDTH - DOUBLES_ALLEY, COURT_LENGTH),
+        WHITE,
+        3
+    )
+
+    # -----------------------------------
+    # Service lines
+    # -----------------------------------
+
+    # Top service line
+    cv2.line(
+        image,
+        point(DOUBLES_ALLEY, top_service_y),
+        point(COURT_WIDTH - DOUBLES_ALLEY, top_service_y),
+        WHITE,
+        3
+    )
+
+    # Bottom service line
+    cv2.line(
+        image,
+        point(DOUBLES_ALLEY, bottom_service_y),
+        point(COURT_WIDTH - DOUBLES_ALLEY, bottom_service_y),
+        WHITE,
+        3
+    )
+
+    # -----------------------------------
+    # Centre service line
+    # -----------------------------------
+    cv2.line(
+        image,
+        point(HALF_WIDTH, top_service_y),
+        point(HALF_WIDTH, bottom_service_y),
+        WHITE,
+        3
+    )
+
+    # -----------------------------------
+    # Net
+    # -----------------------------------
+    cv2.line(
+        image,
+        point(0, HALF_LENGTH),
+        point(COURT_WIDTH, HALF_LENGTH),
+        (0, 0, 0),
+        4
+    )
+
+    # -----------------------------------
+    # Centre marks on baselines
+    # -----------------------------------
+    CENTER_MARK_LENGTH = 0.10
+
+    # Top baseline centre mark
+    cv2.line(
+        image,
+        point(HALF_WIDTH, 0),
+        point(HALF_WIDTH, CENTER_MARK_LENGTH),
+        WHITE,
+        3
+    )
+
+    # Bottom baseline centre mark
+    cv2.line(
+        image,
+        point(HALF_WIDTH, COURT_LENGTH),
+        point(HALF_WIDTH, COURT_LENGTH - CENTER_MARK_LENGTH),
+        WHITE,
+        3
+    )
+
+    return image
+
 def live_homography_graph(
     COURT_POINTS_INPUT_FILE: Path,
     PREDICTIONS_INPUT_FILE: Path,
@@ -349,20 +583,20 @@ def live_homography_graph(
             window_name
         )
 
-        frame_number = 1
+        frame_id = 1
         # Only redraw when the slider changes.
         if frame_index != current_frame_index:
 
             current_frame_index = frame_index
 
-            predictions_array = predictions_by_frame[frame_number]
+            predictions_array = predictions_by_frame[frame_id]
 
             court_frame = PICKLEBALL_COURT_IMAGE.copy()
             ball_found = False
 
             cv2.putText(
                 court_frame,
-                f"Frame Number: {frame_number}",
+                f"Frame Number: {frame_id}",
                 (1, 50),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.6,
@@ -371,7 +605,7 @@ def live_homography_graph(
             )
 
             frame_ball_tracking = ball_tracking_stats.get(
-                frame_number
+                frame_id
             )
 
             if frame_ball_tracking is None:
@@ -512,10 +746,12 @@ def shot_chart(
     PREDICTIONS_INPUT_FILE: Path,
     BALL_TRACKING_CLASS_FILE: Path,
     VIDEO_FILE: Path,
+    SPORT: str,
     bounce_angle_threshold: np.float64 = np.float64(40),
-    player_angle_difference_threshold: np.float64 = np.float64(95),
+    player_angle_difference_threshold: np.float64 = np.float64(90),
     bounce_frame_cooldown: int = 5,
-    testing: bool = True,
+    debug: bool = False,
+    graph_trajectory: bool = False
 ):
 
     cap = cv2.VideoCapture(VIDEO_FILE)
@@ -523,14 +759,42 @@ def shot_chart(
     if not cap.isOpened():
         raise RuntimeError(f"Could not open video: {VIDEO_FILE}")
 
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-
-    PICKLEBALL_COURT_IMAGE = draw_pickleball_court()
-    
     with open(COURT_POINTS_INPUT_FILE, "r") as f:
         print(f"Opening {COURT_POINTS_INPUT_FILE}")
         court_points = json.load(f)
+
+    if SPORT == "pickleball":
+        window_name = "Video and Pickleball Court"
+        CURRENT_COURT_IMAGE = draw_pickleball_court()
+
+        video_points = [
+                coordinate
+                for point_location, coordinate
+                in court_points["image_points"].items()
+            ]
+
+    elif SPORT == "tennis":
+
+        window_name = "Video and Tennis Court"
+        CURRENT_COURT_IMAGE = draw_tennis_court()
+        video_points = []
+
+        first_frame_court_points = court_points.get("1", [])
+        if not first_frame_court_points:
+
+            print(f"Could not find court points for the first frame.")
+            os._exit(1)
+
+        for keypoint_detection_dict in first_frame_court_points:
+
+            curr_x = keypoint_detection_dict['x']
+            curr_y = keypoint_detection_dict['y']
+
+            video_points.append((curr_x, curr_y))
+
+    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+    cv2.resizeWindow(window_name, 960, 540)
+    fps = cap.get(cv2.CAP_PROP_FPS)
 
     with open(PREDICTIONS_INPUT_FILE, "r") as f:
         print(f"Opening {PREDICTIONS_INPUT_FILE}")
@@ -540,21 +804,21 @@ def shot_chart(
     with open(BALL_TRACKING_CLASS_FILE, "rb") as f:
         print(f"Opening {BALL_TRACKING_CLASS_FILE}")
         ball_tracker = pickle.load(f)
-
-    video_points = [
-        coordinate
-        for point_location, coordinate
-        in court_points["image_points"].items()
-    ]
+        for k, v in ball_tracker.tracker.items(): 
+            if isinstance(k, str): 
+                ball_tracker.tracker = {int(keys): vals for keys, vals in ball_tracker.items()}
+            break
 
     video_points = np.array(video_points, dtype=np.float32)
 
     HOMOGRAPHY_MATRIX = compute_homography(
-        video_points=video_points
+        video_points=video_points,
+        sport=SPORT
     )
 
-    frame_number = 1
+    frame_id = 1
     bounce_cooldown = 0
+    bounces = []
 
     while True:
 
@@ -563,111 +827,143 @@ def shot_chart(
         if not success:
             break
 
-        court_image = PICKLEBALL_COURT_IMAGE.copy()
+        court_image = CURRENT_COURT_IMAGE.copy()
 
-        current_ball_frame_stats = ball_tracker.tracker.get(frame_number)
-        ball_location = current_ball_frame_stats.get("homography location")
-        ball_angle = current_ball_frame_stats.get("angle")
-        bounced = False
-        closest_player_to_ball = None
-        player_locations = []
-
-        if not ball_angle:
-            frame_number += 1
+        current_ball_frame_stats = ball_tracker.tracker.get(frame_id)
+        if not current_ball_frame_stats: 
+            frame_id += 1
             continue
 
-        if validate_bounce(
-            frame_number=frame_number,
-            ball_tracker=ball_tracker,
-            bounce_angle_threshold=bounce_angle_threshold,
-            bounce_frame_cooldown=bounce_frame_cooldown,
-            testing=testing
-        ):
+        ball_homography_location = current_ball_frame_stats.get("homography location")
+        ball_vision_model_location = current_ball_frame_stats.get("vision model location")
+        ball_angle = current_ball_frame_stats.get("angle")
+        bounced = False
+        player_locations = []
 
-            if bounce_cooldown == 0:
+        if ball_angle:
 
-                print(f"Ball bounced on frame {frame_number}")
-                bounced = True
-                if ball_angle < player_angle_difference_threshold:
+            if validate_bounce(
+                frame_id=frame_id,
+                ball_tracker=ball_tracker,
+                bounce_angle_threshold=bounce_angle_threshold,
+                bounce_frame_cooldown=bounce_frame_cooldown,
+                debug=debug
+            ):
+
+                print(f"Ball bounced on frame {frame_id} (bounce cooldown = {bounce_cooldown})")
+
+                if bounce_cooldown == 0:
+
+                    bounced = True
+
+                    if ball_angle < player_angle_difference_threshold:
+                        print(f"Ball plotted at {ball_homography_location} (frame {frame_id})")
+                        cv2.circle(
+                            img=CURRENT_COURT_IMAGE,
+                            center=ball_homography_location,
+                            radius=5,
+                            color=(0, 0, 0),
+                            thickness=3
+                        )
+
+                    bounce_cooldown = bounce_frame_cooldown
+
+            if bounce_cooldown > 0 and not bounced: 
+
+                bounce_cooldown -= 1
+
+            # plot live ball
+            cv2.circle(
+                img=court_image,
+                center=ball_homography_location,
+                radius=5,
+                color=(255, 255, 0),
+                thickness=3
+            )
+
+            for pred in predictions_by_frame[frame_id]:
+
+                if pred['class'] == 'ball' or 'box' not in pred: continue
+
+                coordinates, center = get_coordinates_and_center(prediction=pred)
+
+                location = detection_of_court_points(
+                    box=np.array(pred['box'], dtype=np.float32),
+                    H=HOMOGRAPHY_MATRIX
+                )
+
+                player_locations.append((location, center))
+
+                cv2.circle(
+                    img=court_image,
+                    center=location,
+                    radius=1,
+                    color=(0, 0, 0),
+                    thickness=1
+                )
+
+                cv2.putText(
+                    court_image,
+                    pred['class'],
+                    (
+                        location[0],
+                        max(location[1] - 10, 15)
+                    ),
+                    cv2.FONT_HERSHEY_COMPLEX,
+                    0.6,
+                    (0, 0, 0),
+                    2
+                )
+
+            found_player_near_ball, nearest_player_location = ball_near_player(
+                                                                frame_id=frame_id,
+                                                                predictions_by_frame=predictions_by_frame,
+                                                                ball_center=ball_vision_model_location,
+                                                                HOMOGRAPHY_MATRIX=HOMOGRAPHY_MATRIX
+                                                            )
+
+            if bounced:
+                print(f"Ball near player is {found_player_near_ball}")
+            
+            if (
+                ball_angle >= player_angle_difference_threshold and
+                bounced
+            ):
+
+                all_zeros = True
+
+                if bounces:
+
+                    start_frame, end_frame = bounces[-1], frame_id
+
+                    for frame in range(start_frame + 1, end_frame):
+
+                        if ball_tracker.tracker[frame]['angle'] != 0:
+                            all_zeros = False
+                            break
+
+                else:
+
+                    all_zeros = False
+                    
+                if not all_zeros:    
+
+                    print(f"Plotted frame {frame_id}")
                     cv2.circle(
-                        img=PICKLEBALL_COURT_IMAGE,
-                        center=ball_location,
+                        img=CURRENT_COURT_IMAGE,
+                        center=nearest_player_location,
                         radius=5,
                         color=(0, 0, 0),
                         thickness=3
                     )
 
-                bounce_cooldown = bounce_frame_cooldown
-
-
-        if bounce_cooldown > 0 and not bounced: 
-
-            bounce_cooldown -= 1
-
-
-        for pred in predictions_by_frame[frame_number]:
-
-            if pred['class'] == 'ball' or 'box' not in pred: continue
-
-            coordinates, center = get_coordinates_and_center(prediction=pred)
-
-            location = detection_of_court_points(
-                box=np.array(pred['box'], dtype=np.float32),
-                H=HOMOGRAPHY_MATRIX
-            )
-
-            player_locations.append((location, center))
-
-            if ball_angle >= player_angle_difference_threshold and bounced:
-
-                ballx, bally = ball_location
-                playerx, playery = location
-
-                current_pixels_away = np.hypot(playerx - ballx, playery - bally)
-                
-                if not closest_player_to_ball:
-
-                    closest_player_to_ball = [location, current_pixels_away]
-
                 else:
 
-                    if current_pixels_away < closest_player_to_ball[1]:
-                        closest_player_to_ball = [location, current_pixels_away]
-
-            cv2.circle(
-                img=court_image,
-                center=location,
-                radius=1,
-                color=(0, 0, 0),
-                thickness=1
-            )
-
-            cv2.putText(
-                court_image,
-                pred['class'],
-                (
-                    location[0],
-                    max(location[1] - 10, 15)
-                ),
-                cv2.FONT_HERSHEY_COMPLEX,
-                0.6,
-                (0, 0, 0),
-                2
-            )
-
-        if ball_angle >= player_angle_difference_threshold and bounced:
-            print(f"Ball hit by player, location = {closest_player_to_ball[0]}")
-            cv2.circle(
-                img=PICKLEBALL_COURT_IMAGE,
-                center=closest_player_to_ball[0],
-                radius=5,
-                color=(0, 0, 0),
-                thickness=3
-            )
+                    bounced = False
 
         cv2.putText(
             court_image,
-            f"Frame: {frame_number}",
+            f"Frame: {frame_id}",
             (10, 25),
             cv2.FONT_HERSHEY_COMPLEX,
             0.6,
@@ -677,15 +973,13 @@ def shot_chart(
 
         # Resize court image to match the video frame's height.
         video_height, video_width = video_frame.shape[:2]
-        court_height, court_width = court_image.shape[:2]
-
-        scale = video_height / court_height
-
-        resized_court_width = int(court_width * scale)
+        PICKLEBALL_COURT_HEIGHT, PICKLEBALL_COURT_HEIGHT = court_image.shape[:2]
+        PICKLEBALL_COURT_SCALE = video_height / PICKLEBALL_COURT_HEIGHT
+        resized_PICKLEBALL_COURT_HEIGHT = int(PICKLEBALL_COURT_HEIGHT * PICKLEBALL_COURT_SCALE)
 
         court_frame = cv2.resize(
             court_image,
-            (resized_court_width, video_height)
+            (resized_PICKLEBALL_COURT_HEIGHT, video_height)
         )
 
         # Combine horizontally.
@@ -695,9 +989,13 @@ def shot_chart(
         ])
 
         cv2.imshow(
-            "Video and Pickleball Court",
+            window_name,
             side_by_side
         )
+
+        if bounced:
+            if graph_trajectory:
+                plot_ball_trajectory(ball_dict=ball_tracker.tracker, frame_num=frame_id)
 
         delay = max(1, int(1000 / fps))
         key = cv2.waitKey(delay) & 0xFF
@@ -705,7 +1003,7 @@ def shot_chart(
         if key == ord("q"):
             break
 
-        frame_number += 1
+        frame_id += 1
 
     cv2.destroyAllWindows()
 

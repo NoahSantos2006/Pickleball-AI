@@ -1,0 +1,11 @@
+.venv/
+compilation/
+__pycache__/
+input/
+output/
+
+*.part
+*.env
+*.jpg
+
+TODO.txt

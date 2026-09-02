@@ -189,7 +189,7 @@ def points(VIDEO_PATH: Path):
 
 if __name__ == "__main__":
 
-    video_filename = "18"
+    video_filename = "laptop12"
 
     VIDEO_PATH = os.path.join("input", f"{video_filename}.mp4")
     OUTPUT_PATH = os.path.join("output", "court_points", f"{video_filename}_court_points.json")

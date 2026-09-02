@@ -1,1 +1,2 @@
 yt-dlp -f "bestvideo+bestaudio" <YouTube_URL>
+yt-dlp -f "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]" --merge-output-format mp4 "URL"

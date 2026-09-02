@@ -167,6 +167,218 @@ def draw_pickleball_court():
     cv2.waitKey(0)
     cv2.destroyAllWindows()
 
+# IN METERS
+def draw_tennis_court():
+
+    # Tennis court dimensions in metres
+    COURT_LENGTH = 23.77
+    COURT_WIDTH = 10.97
+
+    DOUBLES_ALLEY = 1.37
+    SERVICE_LINE_FROM_NET = 6.40
+
+    HALF_LENGTH = COURT_LENGTH / 2
+    HALF_WIDTH = COURT_WIDTH / 2
+
+    # Drawing settings
+    SCALE = 25
+    PADDING = 30
+
+    # Vertical orientation:
+    # width = court width
+    # height = court length
+    OUTPUT_WIDTH = int(COURT_WIDTH * SCALE)
+    OUTPUT_HEIGHT = int(COURT_LENGTH * SCALE)
+
+    image = np.full(
+        (
+            OUTPUT_HEIGHT + PADDING * 2,
+            OUTPUT_WIDTH + PADDING * 2,
+            3
+        ),
+        (60, 110, 60),
+        dtype="uint8"
+    )
+
+    # Convert court coordinates in metres to pixels
+    # x = court width
+    # y = court length
+    def point(x, y):
+        return (
+            int(PADDING + x * SCALE),
+            int(PADDING + y * SCALE)
+        )
+
+    WHITE = (255, 255, 255)
+    COURT_COLOR = (80, 150, 80)
+    SERVICE_COLOR = (70, 140, 70)
+
+    # -----------------------------------
+    # Court background
+    # -----------------------------------
+    cv2.rectangle(
+        image,
+        point(0, 0),
+        point(COURT_WIDTH, COURT_LENGTH),
+        COURT_COLOR,
+        -1
+    )
+
+    # -----------------------------------
+    # Important Y positions
+    # -----------------------------------
+    top_service_y = HALF_LENGTH - SERVICE_LINE_FROM_NET
+    bottom_service_y = HALF_LENGTH + SERVICE_LINE_FROM_NET
+
+    # -----------------------------------
+    # Service box area
+    # -----------------------------------
+    cv2.rectangle(
+        image,
+        point(DOUBLES_ALLEY, top_service_y),
+        point(COURT_WIDTH - DOUBLES_ALLEY, bottom_service_y),
+        SERVICE_COLOR,
+        -1
+    )
+
+    # -----------------------------------
+    # Outer doubles lines
+    # -----------------------------------
+
+    # Top baseline
+    cv2.line(
+        image,
+        point(0, 0),
+        point(COURT_WIDTH, 0),
+        WHITE,
+        3
+    )
+
+    # Bottom baseline
+    cv2.line(
+        image,
+        point(0, COURT_LENGTH),
+        point(COURT_WIDTH, COURT_LENGTH),
+        WHITE,
+        3
+    )
+
+    # Left doubles sideline
+    cv2.line(
+        image,
+        point(0, 0),
+        point(0, COURT_LENGTH),
+        WHITE,
+        3
+    )
+
+    # Right doubles sideline
+    cv2.line(
+        image,
+        point(COURT_WIDTH, 0),
+        point(COURT_WIDTH, COURT_LENGTH),
+        WHITE,
+        3
+    )
+
+    # -----------------------------------
+    # Singles sidelines
+    # -----------------------------------
+
+    # Left singles sideline
+    cv2.line(
+        image,
+        point(DOUBLES_ALLEY, 0),
+        point(DOUBLES_ALLEY, COURT_LENGTH),
+        WHITE,
+        3
+    )
+
+    # Right singles sideline
+    cv2.line(
+        image,
+        point(COURT_WIDTH - DOUBLES_ALLEY, 0),
+        point(COURT_WIDTH - DOUBLES_ALLEY, COURT_LENGTH),
+        WHITE,
+        3
+    )
+
+    # -----------------------------------
+    # Service lines
+    # -----------------------------------
+
+    # Top service line
+    cv2.line(
+        image,
+        point(DOUBLES_ALLEY, top_service_y),
+        point(COURT_WIDTH - DOUBLES_ALLEY, top_service_y),
+        WHITE,
+        3
+    )
+
+    # Bottom service line
+    cv2.line(
+        image,
+        point(DOUBLES_ALLEY, bottom_service_y),
+        point(COURT_WIDTH - DOUBLES_ALLEY, bottom_service_y),
+        WHITE,
+        3
+    )
+
+    # -----------------------------------
+    # Centre service line
+    # -----------------------------------
+    cv2.line(
+        image,
+        point(HALF_WIDTH, top_service_y),
+        point(HALF_WIDTH, bottom_service_y),
+        WHITE,
+        3
+    )
+
+    # -----------------------------------
+    # Net
+    # -----------------------------------
+    cv2.line(
+        image,
+        point(0, HALF_LENGTH),
+        point(COURT_WIDTH, HALF_LENGTH),
+        (0, 0, 0),
+        4
+    )
+
+    # -----------------------------------
+    # Centre marks on baselines
+    # -----------------------------------
+    CENTER_MARK_LENGTH = 0.10
+
+    # Top baseline centre mark
+    cv2.line(
+        image,
+        point(HALF_WIDTH, 0),
+        point(HALF_WIDTH, CENTER_MARK_LENGTH),
+        WHITE,
+        3
+    )
+
+    # Bottom baseline centre mark
+    cv2.line(
+        image,
+        point(HALF_WIDTH, COURT_LENGTH),
+        point(HALF_WIDTH, COURT_LENGTH - CENTER_MARK_LENGTH),
+        WHITE,
+        3
+    )
+
+    # -----------------------------------
+    # Display court
+    # -----------------------------------
+    cv2.imshow("Vertical Tennis Court", image)
+
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
+
+
 if __name__ == "__main__":
 
-    draw_pickleball_court()
+    draw_tennis_court()
