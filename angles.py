@@ -42,8 +42,7 @@ create_directories()
 
 if __name__ == "__main__":
 
-    video_filnames = ['laptop4', 'laptop6', 'laptop7', 'laptop8', 'laptop9', 'laptop10']
-    video_filnames = ['tennis1', 'tennis2', 'tennis3']
+    video_filnames = ['pctennis1', 'pctennis2', 'pctennis3', 'pctennis4']
     debug = True
 
     total_precision = 0   # tp / (tp + fp)

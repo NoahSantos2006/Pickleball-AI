@@ -376,19 +376,14 @@ def validate_bounce(
 
     if cur_vy * next_vy < 0: sign_change = True
     if abs(next_next_vy - cur_vy) > slowdown_velocity_threshold: slowdown = True
-    if (
-        (cur_bounce_angle > bounce_angle_threshold)
-    ): angle_change = True
+    if cur_bounce_angle > bounce_angle_threshold: angle_change = True
 
     local_minima = local_speed_minima(frame_id=frame_id, ball_tracker=ball_tracker.tracker)
 
     if (
         sum(positive_velocities) == 1 and (next_vy > 0 or cur_vy > 0) or                                # if there's a noise with vy sign change
         sum(positive_velocities) == len(positive_velocities) - 1 and (next_vy < 0 or cur_vy < 0) or     # ^
-        zeros_before_frame or                                                                           # if the angles leading up to frame_id is all 0
-        cur_bounce_angle > max_bounce_angle or                                                          # if angle > max_bounce_angle then it's most likely a player hit
-        next_bounce_angle > max_bounce_angle or                                                         # ^
-        next_next_bounce_angle > max_bounce_angle or                                                    # ^        
+        zeros_before_frame or                                                                           # if the angles leading up to frame_id is all 0    
         next_consecutive_estimations > 3 or                                                             # if the next 3 ball locations are estimations
         abs(next_vy - cur_vy) < minimum_velocity_change_threshold or                                    # minimum y velocity change threshold (for noise) 
         cur_bounce_angle == 90.0 or                                                                     # if something wrong with the frame 
@@ -397,10 +392,18 @@ def validate_bounce(
 
         return False
 
+    # player hit detection
+    # if (
+    #     cur_bounce_angle > max_bounce_angle or 
+    #     next_bounce_angle > max_bounce_angle or 
+    #     next_next_bounce_angle > max_bounce_angle
+    # ): 
+    #     print(f"Player hit on frame {frame_id}")
+    #     return False
+
     if (
         (speed > speed_threshold or cur_bounce_angle > bounce_angle_with_low_speed_threshold) and
-        (local_minima or
-        angle_change or
+        (angle_change or
         ((sign_change and angle_change > angle_threshold_with_sign_change) or slowdown) and 
         consecutive_non_degrees < consecutive_non_degrees_threshold)
     ): 
@@ -422,7 +425,7 @@ def find_angles(
 
     actual_bounces = []
 
-    if actual_bounces_path:
+    if debug:
 
         if not os.path.isfile(actual_bounces_path):
 
@@ -598,12 +601,14 @@ def run_predictions(
 
         print(f"Opening {PREDICTIONS_INPUT_FILE}")
         predictions_by_frame = json.load(f)
+        total_frames = len(predictions_by_frame)
+        
 
     number_of_repeat_frames = 0
 
-    for frame_id, predictions_array in predictions_by_frame.items():
+    for frame_id in range(1, total_frames + 1):
 
-        frame_id = int(frame_id)
+        predictions_array = predictions_by_frame.get(str(frame_id))
 
         current_ball_locations = []
     

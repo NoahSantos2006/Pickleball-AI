@@ -23,7 +23,7 @@ from points import points
 
 if __name__ == "__main__":
 
-    video_filename = "tennis"
+    video_filename = "pctennis4"
     sport = 'tennis'
     debug=False
 

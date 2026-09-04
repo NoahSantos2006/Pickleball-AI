@@ -434,7 +434,6 @@ def predict(
             # Only check the model ID once
             if not model_verified and debug:
                 model_id = data.get("model_id")
-                court_detection_model_id = data.get("court_detection_model_id", None)
 
                 if model_id is None:
                     print("Could not find model ID.")
@@ -507,11 +506,6 @@ def predict(
                 )
 
                 preds = predictions_by_frame.get(frame_id)
-
-                if not preds:
-
-                    print(f"Frame {frame_id} does not have any predictions.")
-                    os._exit(1)
 
                 xyxy = []
                 confidences = []
@@ -678,7 +672,7 @@ def validate_video(
             
 if __name__ == "__main__":
 
-    video_filename = "tennis3"
+    video_filename = "full_match1"
     sport="tennis"
     vision_model_id = 12
     debug=False
